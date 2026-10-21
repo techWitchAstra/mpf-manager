@@ -46,7 +46,39 @@ def loadYAML(filePath: Path) -> Any:
     # If presuming all above if statements do not return true, then we
     # load up the yaml file
     with filePath.open("r",encoding="utf-8") as yamlFile:
-        return _yaml().load(yamlFile)
+        return _yaml().loadYAML(yamlFile)
 
 # The following function writes the yaml files
 def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None) -> None:
+    """Function for writing YAML files based on data, a file path, and a header string"""
+
+    # The following checks to see if the parent directories exist,
+    # and creates it if not
+    filePath.parent.mkdir(parents=True, exist_ok=True)
+
+    # The following creates a temporary file to work in
+    tmpFile = filePath.with_suffix(filePath.suffix + ".tmp")
+
+    # The following try attempts to write the data to the file
+    try:
+
+        # The following opens the temp file
+        with tmpFile.open("w", encoding="utf-8") as fileObject:
+
+            # The following checks if a header string exists
+            if headerString:
+
+                # If a header string did exist, it is written first
+                fileObject.write(headerString.rstrip("\n") + "\n")
+
+            # The YAML Data is then written to the file
+            _yaml().writeYAML(dataToWrite,fileObject)
+
+        # The temp file then is moved to be the actual file
+        tmpFile.replace(filePath)
+
+    # The following catches any exceptions and does not write them to
+    # the file
+    except BaseException:
+        tmpFile.unlink(missing_ok=True)
+        raise
