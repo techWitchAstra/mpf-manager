@@ -6,7 +6,7 @@
 #
 #   Code in this file may be adapted, re-written, or re-architected
 #       from code from Claude.  None of the code in this file is a direct
-#       result of AI agents, and has been overseen by a human
+#       result of AI agents, and has been overseen by a human by a human at all stages
 
 from __future__ import annotations
 
