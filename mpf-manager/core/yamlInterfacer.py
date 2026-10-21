@@ -1,3 +1,5 @@
+"""Ruamel.yaml based yaml interpreter and associated functions"""
+
 #   yamlInterfacer - Responsible for imporation and exportation of yaml
 #       files and data as necessary to accomplish tasks in the application
 # 
@@ -19,6 +21,7 @@ from ruamel.yaml import YAML
 # The following function sets up the YAML intepreter to be used for
 # reading yaml files for our needs.
 def _yaml() -> YAML:
+    """Yaml Processor"""
 
     # Configuration of YAML processor, including type of yaml in relation
     # to comments, indentation settings for the yaml, preferences for
@@ -34,6 +37,7 @@ def _yaml() -> YAML:
 
 # The following function loads the yaml files
 def loadYAML(filePath: Path) -> Any:
+    """Function for loading YAML files based on a filepath"""
 
     # The following if statement checks to see if the file path exists
     if not filePath.exists():
