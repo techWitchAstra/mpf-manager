@@ -17,7 +17,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 #Import UI from UI folder
-from ui.mainWindow import MainWindow
+from mpfmanager.ui.mainWindow import MainWindow
 
 # The following defines the main application activity or routine
 def main() -> None:
