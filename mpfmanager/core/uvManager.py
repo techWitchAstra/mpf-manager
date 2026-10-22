@@ -50,20 +50,28 @@ def locateUV() -> str:
     # The Following Sets the UV Path    
     uvPath = shutil.which("uv")
 
+    # The following error is displayed if UV is not found in the application or system
     if not uvPath:
         raise UvNotFoundError(
             "uv could not be found, re-install mpf-manager or install "
             "uv separately (not-recommended)"
         )
 
-    # The following sets up the virtual environment using a specific path 
-    # and python version
-    def setupVENV(filePath: Path, pythonVersion: str) -> list[str]:
-        return [locateUV(), "venv", "--python", pythonVersion,str(filePath)]
+# The following sets up the virtual environment using a specific path 
+# and python version
+def setupVENV(filePath: Path, pythonVersion: str) -> list[str]:
+    """setupVENV sets up a virtual environment given a path and python version"""
+    return [locateUV(), "venv", "--python", pythonVersion,str(filePath)]
 
-    # The following installs objects in the virtual environment based on 
-    # a list of required packages and a virtual environment path
-    def installPythonInVENV(venvPath: Path, requiredPackages: list[str]) -> list[str]:
-        return [locateUV(), "pip", "install", "--python", str(venvPath), *requiredPackages]
+# The following installs objects in the virtual environment based on 
+# a list of required packages and a virtual environment path
+def installVENVPackages(venvPath: Path, requiredPackages: list[str]) -> list[str]:
+    """installVENVPackages installs packages inside of a virtual environment container"""
+    return [locateUV(), "pip", "install", "--python", str(venvPath), *requiredPackages]
 
-    
+# The following un-installs objects in a virtual environment based 
+# on a list of packaged and the virtual environment path
+def uninstallVENVPackages(venvPath: Path, packagesToRemove: list[str]) -> list[str]:
+    """uninstallVENVPackages remove packages from a virtual environment"""
+    return [locateUV(), "pip", "uninstall", "--python", str(venvPath), *packagesToRemove]
+
