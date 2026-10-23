@@ -75,3 +75,41 @@ def uninstallVENVPackages(venvPath: Path, packagesToRemove: list[str]) -> list[s
     """uninstallVENVPackages remove packages from a virtual environment"""
     return [locateUV(), "pip", "uninstall", "--python", str(venvPath), *packagesToRemove]
 
+# The following outputs a list of the packages installed in a virtual environment
+def listVENVPackages(venvPath: Path) -> dict[str,str]:
+    """listVENVPackages lists the installed packages in a given VENV"""
+
+    # The following process uses uv to output the list of installed python packages
+    outputList = subprocess.run(
+        [locateUV(), "pip", "list", "--python", str(venvPath), "--format", "json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    #The following returns the list by parsing the list from the output
+    return {listPointer["name"].lower().replace("_", "-"): listPointer["version"] for listPointer in json.loads(outputList or "[]")}
+
+# The following outputs a list of the python versions usable for UV in creating VENVs
+def listPythonVersions() -> set[str]:
+    """listPythonVersions lists the installed python versions for use with UV"""
+
+    # The following process uses UV to determine all the installed python versions
+    outputList = subprocess.run(
+        [locateUV(), "python", "list", "--only-installed", "--output-format", "json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    # The following creates an object to store the version result in
+    versions = set()
+
+    # The following iterates through the JSON output going row by row removing the patch number
+    for listItem in json.loads(outputList or "[]"):
+        versionParts = str(listItem.get("version", "")).split(".")
+        if len(versionParts) >= 2:
+            versions.add(f"{versionParts[0]}.{versionParts[1]}")
+
+    # The following returns the versions object
+    return versions
