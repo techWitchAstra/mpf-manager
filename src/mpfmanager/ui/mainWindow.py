@@ -269,9 +269,7 @@ class MainWindow(QMainWindow):
         selectedItem = self.venvAvailableTable.item(selectedRow, 0)
         if selectedItem is None:
             return None
-        return self.storedData.getVENVbyName(
-            selectedItem.data(Qt.ItemDataRole.UserRole)
-        )
+        return self.storedData.getVENVbyName(selectedItem.data(Qt.ItemDataRole.UserRole))
 
     # The following outputs the selected project
     def selectedProject(self) -> Project | None:
@@ -412,8 +410,8 @@ class MainWindow(QMainWindow):
             else:
                 environment = self.storedData.getVENVbyName(plannedVENV.venvName)
                 if environment is None:
-                                    self.outputLogger(f"Environment '{plannedVENV.venvName}' is no longer registered.")
-                                    return
+                    self.outputLogger(f"Environment '{plannedVENV.venvName}' is no longer registered.")
+                    return
                 environment.installedMPFVersion, environment.additionalPackages = (
                     plannedVENV.mpfVersion,
                     plannedVENV.companionPackages,
