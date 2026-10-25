@@ -138,7 +138,7 @@ class VENVManagementDialog(QDialog):
         # The following creates a dialog for where to store the virtual environment, that does not display when 
         # editting the mpf add-ons for a virtual environment
         self.parentFolderDialog = _browseWidget(self.venvParentLocation, self, "Choose where to create the environment")
-        dialogForm.addRow("Create in:", self.venvParentLocation)
+        dialogForm.addRow("Create in:", self.parentFolderDialog)
         dialogForm.setRowVisible(self.parentFolderDialog, venvObject is None)
 
         # The following label displays the location of the virtual environment
@@ -359,7 +359,7 @@ class mpfProjectCreationDialog(QDialog):
         # The following sets up the new project form
         projectForm = QFormLayout()
         projectForm.addRow("Name:", self.projectName)
-        projectForm.addRow("Create in:", _browseWidget(self.projectParentFolderDialog, self, "Choose a folder"))
+        projectForm.addRow("Create in:", _browseWidget(self.projectParentFolder, self, "Choose a folder"))
         projectForm.addRow("Environment:", self.environmentPair)
 
         # The following creates the dialog buttons
