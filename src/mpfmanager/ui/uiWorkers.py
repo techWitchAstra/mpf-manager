@@ -61,7 +61,7 @@ class CommandQueue(QObject):
         newProc.finished.connect(lambda code, status: self._finished(newProc, code, status))
         newProc.errorOccurred.connect(lambda err: self._errored(newProc, err))
         self._process = newProc
-        newProc.startProcess(nextCMD[0], nextCMD[1:])
+        newProc.start(nextCMD[0], nextCMD[1:])
 
     # The following function reads the output from a process
     def _read(self, readProc: QProcess) -> None:
@@ -117,7 +117,7 @@ class RunningProcess(QObject):
     # The following starts the running process
     def startProcess(self) -> None:
         self.outputSignal.emit(f"$ {shlex.join(self.runningProcessCMD)}")
-        self.process.startProcess(self.runningProcessCMD[0], self.runningProcessCMD[1:])
+        self.process.start(self.runningProcessCMD[0], self.runningProcessCMD[1:])
 
     # The following stops the running process
     def stopProcess(self) -> None:
