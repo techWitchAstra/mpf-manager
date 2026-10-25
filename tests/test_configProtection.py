@@ -1,6 +1,6 @@
 import pytest
 
-from mpfmanager.core.storageManager import Project, StorageProcessor, VirtualEnvironment
+from mpfmanager.core.storageManager import StorageProcessor
 
 
 @pytest.fixture(autouse=True)
