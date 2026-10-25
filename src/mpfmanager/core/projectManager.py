@@ -91,7 +91,7 @@ def checkConfigVersion(testConfigpath: Path) -> int | None:
     return int(match.group(1)) if match else None
 
 # The following creates a new skeleton MPF project given a pathm and project name
-def create_project(newProjectPath: Path, projectName: str | None = None) -> Path:
+def createNewMPFProject(newProjectPath: Path, projectName: str | None = None) -> Path:
     """creates a skeleton mpf project at a given path"""
 
     # First a check is run to see if the path or file already exists
