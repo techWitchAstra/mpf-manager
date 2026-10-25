@@ -156,11 +156,11 @@ class VENVManagementDialog(QDialog):
         dialogWidgetLayout = QVBoxLayout(self)
         dialogWidgetLayout.addLayout(dialogForm)
         dialogWidgetLayout.addWidget(self.operationStatus)
-        dialogWidgetLayout.addWidget(self.dialogButtonsbuttons)
+        dialogWidgetLayout.addWidget(self.dialogButtons)
 
 
         self._updateVENVLocation()
-        runInThread(self._load, self._loaded, self._load_failed)
+        runInThread(self._loadVENV, self._venvLoaded, self._venvLoadFailed)
 
     # The following is responsible for loading a virtual environment
     @staticmethod
@@ -172,7 +172,7 @@ class VENVManagementDialog(QDialog):
         try:
             installedPythonVersions = uvCMDs.listPythonVersions()
         except Exception:
-            installed = set()
+            installedPythonVersions = set()
         return packageReleases, installedPythonVersions
 
     # The following is called when a virtualEnvironment is succesfully loaded
@@ -306,7 +306,7 @@ class VENVManagementDialog(QDialog):
                 problem = "Choose a folder for the environment."
             elif self.venvParentFolderPath().exists() and not self.venvParentFolderPath().is_dir():
                 problem = f"'{self.venvParentFolderPath()}' is not a folder."
-            elif self.store.getVENVbyName(name):
+            elif self.storageObject.getVENVbyName(name):
                 problem = f"An environment named '{name}' already exists."
             elif self._venvPath().exists():
                 problem = f"'{self._venvPath()}' already exists."
@@ -322,13 +322,13 @@ class VENVManagementDialog(QDialog):
         mpfVersionRequirements = [f"mpf=={mpfVersion}"]
         companionPackages, packagesToRemove = [], []
         for package, box in self.mpfAddOnDialogs.items():
-            match = self._companionAddOnRelease(package) if box.isChecked() else None
+            match = self._compatibleAddOnRelease(package) if box.isChecked() else None
             if match:
                 mpfVersionRequirements.append(f"{package}=={match.pypiVersion}")
                 companionPackages.append(package)
             elif self.venvObject and package in self.venvObject.additionalPackages:
                 packagesToRemove.append(package)
-        return VENVManagementDialog(
+        return venvDialogData(
             venvName=self.venvDialogName.text().strip(),
             venvPath=self._venvPath(),
             pythonVersion=self.pythonVersionDialog.currentData(),
@@ -359,7 +359,7 @@ class mpfProjectCreationDialog(QDialog):
         # The following sets up the new project form
         projectForm = QFormLayout()
         projectForm.addRow("Name:", self.projectName)
-        projectForm.addRow("Create in:", _browseWidget(self.projectParentFolder, self, "Choose a folder"))
+        projectForm.addRow("Create in:", _browseWidget(self.projectParentFolderDialog, self, "Choose a folder"))
         projectForm.addRow("Environment:", self.environmentPair)
 
         # The following creates the dialog buttons
@@ -391,7 +391,7 @@ class mpfProjectCreationDialog(QDialog):
         elif self.projectPath().exists():
             problem = f"'{self.projectPath()}' already exists."
         self.operationStatus.setText(problem)
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problem)
+        self.projectDialogbuttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problem)
 
 # The following class sets up the dialog box for settings
 class SettingsDialog(QDialog):
@@ -433,7 +433,7 @@ def environmentPairing(store: StorageProcessor, selected: str | None = None) -> 
     environmentComboBox = QComboBox()
     environmentComboBox.addItem("(none)", None)
     for environment in store.environmentList:
-        environmentComboBox.addItem(f"{environment.venvName}  (MPF {environment.installedMPFVersion}, Python {environment.installedpython})", environment.venvName)
+        environmentComboBox.addItem(f"{environment.venvName}  (MPF {environment.installedMPFVersion}, Python {environment.installedPython})", environment.venvName)
     index = environmentComboBox.findData(selected)
     environmentComboBox.setCurrentIndex(max(index, 0))
     return environmentComboBox
