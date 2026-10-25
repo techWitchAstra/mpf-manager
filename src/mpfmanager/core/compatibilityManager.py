@@ -57,7 +57,7 @@ class PyPIRelease:
     # The following adds a Pre-Release Check
     @property
     def isPreRelease(self) -> bool:
-        return self.parsed.is__prerelease
+        return self.parsed.is_prerelease
 
 # The following parses through all of the pypi release data for a minimum required python version
 def pypiReleaseProcessor(releaseData: dict) -> list[PyPIRelease]:
