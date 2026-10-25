@@ -95,7 +95,7 @@ class VENVManagementDialog(QDialog):
 
         # The following creates a checkbox for if pre-releases should be included
         self.preReleaseCheckbox = QCheckBox("Include pre-release mpf builds (dev builds)")
-        self.preReleaseCheckbox.setChecked(storageObject.settings.include_prereleases)
+        self.preReleaseCheckbox.setChecked(storageObject.settings.includePreReleases)
         self.preReleaseCheckbox.toggled.connect(self._populateMPFVersions)
 
         # The following creates a box to select a python version
@@ -121,7 +121,7 @@ class VENVManagementDialog(QDialog):
         # The following creates a dialog form to submit as part of dialog box
         dialogForm = QFormLayout()
         dialogForm.addRow("Name:", self.venvDialogName)
-        dialogForm.addRow("MPF version:", self.mpfDialogVersion)
+        dialogForm.addRow("MPF version:", self.dialogMPFVersion)
         dialogForm.addRow("", self.preReleaseCheckbox)
 
         # The following adds a checkbox for each add-on that can be installed with MPF
@@ -171,7 +171,7 @@ class VENVManagementDialog(QDialog):
         
         try:
             installedPythonVersions = uvCMDs.listPythonVersions()
-        except Exception:  # noqa: BLE001 - only used to label the Python list
+        except Exception:
             installed = set()
         return packageReleases, installedPythonVersions
 
@@ -179,7 +179,7 @@ class VENVManagementDialog(QDialog):
     def _venvLoaded(self, loadResult: tuple[dict[str, list[compatibilityManager.PyPIRelease]], set[str]]) -> None:
         self.availableReleases, self.installedVENVPackages = loadResult
         self.operationStatus.setText("")
-        self._updateMPFVersions()
+        self._populateMPFVersions()
 
     # The following is called upon a failed virtual environment packages load
     def _venvLoadFailed(self, errorMessage: str) -> None:
@@ -190,9 +190,9 @@ class VENVManagementDialog(QDialog):
     # The following function is called to force the MPF versions to re-populate depending
     # on pre-release status updates, and venv updates
     def _populateMPFVersions(self) -> None:
-        availableReleases = compatibilityManager.filterPyPIReleases(self.availableReleases.get("mpf", []), self.preReleaseCheckbox.isChecked())
+        compatibleReleases = compatibilityManager.filterPyPIReleases(self.availableReleases.get("mpf", []), self.preReleaseCheckbox.isChecked())
         if self.venvObject:
-            compatibleReleases = [release for release in compatibleReleases if compatibilityManager.python_supported(release.requiredPythonVersion, self.venvObject.installedPython)]
+            compatibleReleases = [release for release in compatibleReleases if compatibilityManager.pythonSetCheck(release.requiredPythonVersion, self.venvObject.installedPython)]
         current = self.dialogMPFVersion.currentData() or (self.venvObject.installedMPFVersion if self.venvObject else None)
         self.dialogMPFVersion.blockSignals(True)
         self.dialogMPFVersion.clear()
@@ -257,7 +257,7 @@ class VENVManagementDialog(QDialog):
         self.pythonVersionDialog.blockSignals(True)
         self.pythonVersionDialog.clear()
         for pythonVersion in pythons:
-            self.pythonVersionDialog.addItem(f"{pythonVersion}  (installed)" if pythonVersion in self.installed else pythonVersion, pythonVersion)
+            self.pythonVersionDialog.addItem(f"{pythonVersion}  (installed)" if pythonVersion in self.installedVENVPackages else pythonVersion, pythonVersion)
         index = self.pythonVersionDialog.findData(current)
         self.pythonVersionDialog.setCurrentIndex(index if index >= 0 else 0)
         self.pythonVersionDialog.blockSignals(False)
@@ -280,7 +280,7 @@ class VENVManagementDialog(QDialog):
     # The following outputs the full VENV path
     def _venvPath(self) -> Path:
         if self.venvObject:
-            return self.venvObject.venv_path
+            return self.venvObject.venvPath
         return self.venvParentFolderPath() / self.venvDialogName.text().strip()
 
     # The following outputs just parent folder path
@@ -306,7 +306,7 @@ class VENVManagementDialog(QDialog):
                 problem = "Choose a folder for the environment."
             elif self.venvParentFolderPath().exists() and not self.venvParentFolderPath().is_dir():
                 problem = f"'{self.venvParentFolderPath()}' is not a folder."
-            elif self.store.get_environment(name):
+            elif self.store.getVENVbyName(name):
                 problem = f"An environment named '{name}' already exists."
             elif self._venvPath().exists():
                 problem = f"'{self._venvPath()}' already exists."
@@ -314,28 +314,28 @@ class VENVManagementDialog(QDialog):
             self.operationStatus.setText(problem)
         elif self.availableReleases:
             self.operationStatus.setText("")
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(problem is None)
+        self.dialogButtons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(problem is None)
 
     # The following creates a skeleton virtual environment
-    def plan(self) -> VENVManagementDialog:
-        version = self.dialogMPFVersion.currentData()
-        requirements = [f"mpf=={version}"]
-        extras, remove = [], []
+    def plan(self) -> venvDialogData:
+        mpfVersion = self.dialogMPFVersion.currentData()
+        mpfVersionRequirements = [f"mpf=={mpfVersion}"]
+        companionPackages, packagesToRemove = [], []
         for package, box in self.mpfAddOnDialogs.items():
-            match = self._companion_release(package) if box.isChecked() else None
+            match = self._companionAddOnRelease(package) if box.isChecked() else None
             if match:
-                requirements.append(f"{package}=={match.pypiVersion}")
-                extras.append(package)
+                mpfVersionRequirements.append(f"{package}=={match.pypiVersion}")
+                companionPackages.append(package)
             elif self.venvObject and package in self.venvObject.additionalPackages:
-                remove.append(package)
+                packagesToRemove.append(package)
         return VENVManagementDialog(
-            name=self.venvDialogName.text().strip(),
-            path=self._venvPath(),
-            python=self.pythonVersionDialog.currentData(),
-            mpfVersion=version,
-            requirements=requirements,
-            extras=extras,
-            remove=remove,
+            venvName=self.venvDialogName.text().strip(),
+            venvPath=self._venvPath(),
+            pythonVersion=self.pythonVersionDialog.currentData(),
+            mpfVersion=mpfVersion,
+            mpfVersionRequirements=mpfVersionRequirements,
+            companionPackages=companionPackages,
+            packagesToRemove=packagesToRemove
         )
 
 # The following class is a dialog box for creating new mpf projects
@@ -351,8 +351,8 @@ class mpfProjectCreationDialog(QDialog):
 
         self.projectName = QLineEdit()
         self.projectName.textChanged.connect(self._validateProject)
-        self.projectParentFolder = QLineEdit(store.settings.projectsDirectory)
-        self.projectParentFolder.textChanged.connect(self._validate)
+        self.projectParentFolder = QLineEdit(store.settings.projectDirectory)
+        self.projectParentFolder.textChanged.connect(self._validateProject)
         self.environmentPair = environmentPairing(store)
         self.operationStatus = QLabel()
 
@@ -393,6 +393,7 @@ class mpfProjectCreationDialog(QDialog):
         self.operationStatus.setText(problem)
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problem)
 
+# The following class sets up the dialog box for settings
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, parentWidget: QWidget | None = None):
         super().__init__(parentWidget)
@@ -405,9 +406,9 @@ class SettingsDialog(QDialog):
 
         # The following sets up the form for configuring settings
         settingsForm = QFormLayout()
-        settingsForm.addRow("Environments folder:", _browseWidget(self.venvDirectory, self, "Environments folder"))
-        settingsForm.addRow("Projects folder:", _browseWidget(self.projectDirectory, self, "Projects folder"))
-        settingsForm.addRow("", self.prereleases)
+        settingsForm.addRow("Environments folder:", _browseWidget(self.venvDirectoryDialog, self, "Environments folder"))
+        settingsForm.addRow("Projects folder:", _browseWidget(self.projectDirectoryDialog, self, "Projects folder"))
+        settingsForm.addRow("", self.preReleasesCheckBox)
 
         # The following configures the dialog buttons for settings
         settingsDialogbuttons = QDialogButtonBox(
@@ -425,7 +426,7 @@ class SettingsDialog(QDialog):
     def applySettings(self, settings: Settings) -> None:
         settings.venvDirectory = self.venvDirectoryDialog.text().strip()
         settings.projectDirectory = self.projectDirectoryDialog.text().strip()
-        settings.includePreReleases = self.prereleasesCheckBox.isChecked()
+        settings.includePreReleases = self.preReleasesCheckBox.isChecked()
 
 # The following creates a callable combo box to display the installed environment pairings
 def environmentPairing(store: StorageProcessor, selected: str | None = None) -> QComboBox:
