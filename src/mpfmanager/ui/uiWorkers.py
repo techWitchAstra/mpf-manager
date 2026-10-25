@@ -1,7 +1,7 @@
 """Runs external commands and blocking calls so the UI does not freeze"""
 
 #   uiWorkers - Manager of external commands and blocking calls
-# 
+#
 #   Written by techWitchAstra
 #
 #   Code in this file may be adapted, re-written, or re-architected
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QProcess, QRunnable, QThreadPool, Signal, Slot
+
 
 # The following creates a Command Queue class for queueing commands
 class CommandQueue(QObject):
@@ -95,6 +96,7 @@ class CommandQueue(QObject):
         if callback:
             callback(ok)
 
+
 # The following class is used as a QObject for long running processes like mpf or godot
 class RunningProcess(QObject):
     """The following handles long running processes that transmit outputs line by line"""
@@ -137,6 +139,7 @@ class RunningProcess(QObject):
             self.outputSignal.emit(f"Failed to start: {self.runningProcessCMD[0]}")
             self.stoppedSignal.emit(-1)
 
+
 # The following slots the done and failed signal to the GUI
 class _Signals(QObject):
     """A Class to hold signals to be called by the GUI"""
@@ -152,7 +155,7 @@ class _Signals(QObject):
         self._onError = onError
         self.doneSignal.connect(self._handle_done)
         self.failedSignal.connect(self._handle_failed)
-    
+
     # The following slots the done signal
     @Slot(object)
     def _handle_done(self, result: Any) -> None:
@@ -165,6 +168,7 @@ class _Signals(QObject):
         _live.discard(self)
         if self._onError:
             self._onError(message)
+
 
 # The following creates a task object
 class _Task(QRunnable):
@@ -185,6 +189,7 @@ class _Task(QRunnable):
 
 # The following keeps the signal objects alive until they can report back
 _live: set[_Signals] = set()
+
 
 # The following function runs a callable function in the global thread pool
 def runInThread(

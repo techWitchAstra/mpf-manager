@@ -1,8 +1,8 @@
-"""Manager for building and running UV to manage the virtual 
+"""Manager for building and running UV to manage the virtual
 Python/MPF Environments"""
 
 #   uvManager - Responsible for managing virtual environments using uv
-# 
+#
 #   Written by techWitchAstra
 #
 #   Code in this file may be adapted, re-written, or re-architected
@@ -20,11 +20,13 @@ import subprocess
 # Import file path objects
 from pathlib import Path
 
+
 # The following class helps process runtime errors related to UV
 class UvNotFoundError(RuntimeError):
     pass
 
-# The following function is used to locate and determine a UV instance 
+
+# The following function is used to locate and determine a UV instance
 # to be used
 def locateUV() -> str:
     """UV Locator"""
@@ -47,38 +49,41 @@ def locateUV() -> str:
         except FileNotFoundError:
             pass
 
-    # The Following Sets the UV Path    
+    # The Following Sets the UV Path
     uvPath = shutil.which("uv")
 
     # The following error is displayed if UV is not found in the application or system
     if not uvPath:
         raise UvNotFoundError(
-            "uv could not be found, re-install mpf-manager or install "
-            "uv separately (not-recommended)"
+            "uv could not be found, re-install mpf-manager or install uv separately (not-recommended)"
         )
 
     return uvPath
 
-# The following sets up the virtual environment using a specific path 
+
+# The following sets up the virtual environment using a specific path
 # and python version
 def setupVENV(filePath: Path, pythonVersion: str) -> list[str]:
     """setupVENV sets up a virtual environment given a path and python version"""
-    return [locateUV(), "venv", "--python", pythonVersion,str(filePath)]
+    return [locateUV(), "venv", "--python", pythonVersion, str(filePath)]
 
-# The following installs objects in the virtual environment based on 
+
+# The following installs objects in the virtual environment based on
 # a list of required packages and a virtual environment path
 def installVENVPackages(venvPath: Path, requiredPackages: list[str]) -> list[str]:
     """installVENVPackages installs packages inside of a virtual environment container"""
     return [locateUV(), "pip", "install", "--python", str(venvPath), *requiredPackages]
 
-# The following un-installs objects in a virtual environment based 
+
+# The following un-installs objects in a virtual environment based
 # on a list of packaged and the virtual environment path
 def uninstallVENVPackages(venvPath: Path, packagesToRemove: list[str]) -> list[str]:
     """uninstallVENVPackages remove packages from a virtual environment"""
     return [locateUV(), "pip", "uninstall", "--python", str(venvPath), *packagesToRemove]
 
+
 # The following outputs a list of the packages installed in a virtual environment
-def listVENVPackages(venvPath: Path) -> dict[str,str]:
+def listVENVPackages(venvPath: Path) -> dict[str, str]:
     """listVENVPackages lists the installed packages in a given VENV"""
 
     # The following process uses uv to output the list of installed python packages
@@ -89,8 +94,12 @@ def listVENVPackages(venvPath: Path) -> dict[str,str]:
         check=True,
     ).stdout
 
-    #The following returns the list by parsing the list from the output
-    return {listPointer["name"].lower().replace("_", "-"): listPointer["version"] for listPointer in json.loads(outputList or "[]")}
+    # The following returns the list by parsing the list from the output
+    return {
+        listPointer["name"].lower().replace("_", "-"): listPointer["version"]
+        for listPointer in json.loads(outputList or "[]")
+    }
+
 
 # The following outputs a list of the python versions usable for UV in creating VENVs
 def listPythonVersions() -> set[str]:

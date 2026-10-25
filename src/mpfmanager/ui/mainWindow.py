@@ -1,7 +1,7 @@
 """Main window: environments tab, projects tab and a shared output outputLogger."""
 
 #   mainWindow - Responsible for the main GUI window containing everything
-# 
+#
 #   Written by techWitchAstra
 #
 #   Code in this file may be adapted, re-written, or re-architected
@@ -42,15 +42,16 @@ from PySide6.QtWidgets import (
 # The following imports the needed parts of the application from other files
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
-from mpfmanager.core.storageManager import VirtualEnvironment, Project, StorageProcessor
+from mpfmanager.core.storageManager import Project, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui.dialogs import (
-    VENVManagementDialog,
-    venvDialogData,
-    mpfProjectCreationDialog,
     SettingsDialog,
+    VENVManagementDialog,
     environmentPairing,
+    mpfProjectCreationDialog,
+    venvDialogData,
 )
 from mpfmanager.ui.uiWorkers import CommandQueue, RunningProcess, runInThread
+
 
 # The following creates a table widget to be called later in the application
 def _table(headers: list[str]) -> QTableWidget:
@@ -64,6 +65,7 @@ def _table(headers: list[str]) -> QTableWidget:
     tableWidget.horizontalHeader().setStretchLastSection(True)
     return tableWidget
 
+
 # The following creates a table widget item given a name and data
 def _item(text: str, data: str | None = None) -> QTableWidgetItem:
     tableWidgetItem = QTableWidgetItem(text)
@@ -71,13 +73,14 @@ def _item(text: str, data: str | None = None) -> QTableWidgetItem:
         tableWidgetItem.setData(Qt.ItemDataRole.UserRole, data)
     return tableWidgetItem
 
+
 # The following function opens a folder using QDesktopServices
 def _openMPFmachineFolder(folderPath: Path) -> None:
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(folderPath)))
 
+
 # The following defines the main window for MPF Manager
 class MainWindow(QMainWindow):
-
     # The following function initializes the main window upon inital call
     def __init__(self, storedData: StorageProcessor | None = None):
         super().__init__()
@@ -148,7 +151,10 @@ class MainWindow(QMainWindow):
         self.openVENVButton = QPushButton("Open Virtual Environment's Folder")
         self.openVENVButton.setToolTip("Opens the folder containing the selected Virtual Environment")
         self.openVENVButton.clicked.connect(
-            lambda: (selectedEnvironment := self.selectedEnvironment()) and _openMPFmachineFolder(selectedEnvironment.venvPath)
+            lambda: (
+                (selectedEnvironment := self.selectedEnvironment())
+                and _openMPFmachineFolder(selectedEnvironment.venvPath)
+            )
         )
 
         # The following creates a button to delete a selected virtual environment
@@ -202,7 +208,7 @@ class MainWindow(QMainWindow):
         projectManagementButtonBar.addStretch()
         projectManagementButtonBar.addWidget(self.removeProjectButton)
 
-        #The following sets up the combination box for the run mode options
+        # The following sets up the combination box for the run mode options
         self.runModeOption = QComboBox()
         for label, mode in mpfProjects.RUN_MODES.items():
             self.runModeOption.addItem(label, mode)
@@ -260,7 +266,9 @@ class MainWindow(QMainWindow):
         selectedRow = self.venvAvailableTable.currentRow()
         if selectedRow < 0 or not self.venvAvailableTable.selectedItems():
             return None
-        return self.storedData.getVENVbyName(self.venvAvailableTable.item(selectedRow, 0).data(Qt.ItemDataRole.UserRole))
+        return self.storedData.getVENVbyName(
+            self.venvAvailableTable.item(selectedRow, 0).data(Qt.ItemDataRole.UserRole)
+        )
 
     # The following outputs the selected project
     def selectedProject(self) -> Project | None:
@@ -387,11 +395,20 @@ class MainWindow(QMainWindow):
                 return
             if create:
                 self.storedData.addVENV(
-                    VirtualEnvironment(plannedVENV.venvName, str(plannedVENV.venvPath), plannedVENV.pythonVersion, plannedVENV.mpfVersion, plannedVENV.companionPackages)
+                    VirtualEnvironment(
+                        plannedVENV.venvName,
+                        str(plannedVENV.venvPath),
+                        plannedVENV.pythonVersion,
+                        plannedVENV.mpfVersion,
+                        plannedVENV.companionPackages,
+                    )
                 )
             else:
                 environment = self.storedData.getVENVbyName(plannedVENV.venvName)
-                environment.installedMPFVersion, environment.additionalPackages = plannedVENV.mpfVersion, plannedVENV.companionPackages
+                environment.installedMPFVersion, environment.additionalPackages = (
+                    plannedVENV.mpfVersion,
+                    plannedVENV.companionPackages,
+                )
                 self.storedData.saveConfiguration()
             self.outputLogger(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}.")
             self.refreshMainWindow()
@@ -412,9 +429,13 @@ class MainWindow(QMainWindow):
                 self.outputLogger(f"mpf is not installed in '{environment.venvName}'.")
                 return
             environment.installedMPFVersion = version
-            environment.additionalPackages = [package for package in environment.additionalPackages if package in packages]
+            environment.additionalPackages = [
+                package for package in environment.additionalPackages if package in packages
+            ]
             self.storedData.saveConfiguration()
-            installedPackageText = ", ".join(f"{package} {packages[package]}" for package in ("mpf", *environment.additionalPackages))
+            installedPackageText = ", ".join(
+                f"{package} {packages[package]}" for package in ("mpf", *environment.additionalPackages)
+            )
             self.outputLogger(f"'{environment.venvName}': {installedPackageText}")
             self.refreshMainWindow()
 
@@ -425,8 +446,14 @@ class MainWindow(QMainWindow):
         environmentToDelete = self.selectedEnvironment()
         if not environmentToDelete:
             return
-        projectsUsingVENV = [projectUsingVENV.projectName for projectUsingVENV in self.storedData.projectList if projectUsingVENV.virtualEnvironment == environmentToDelete.venvName]
-        warningText = f"Delete environment '{environmentToDelete.venvName}' and its folder?\n\n{environmentToDelete.venvPath}"
+        projectsUsingVENV = [
+            projectUsingVENV.projectName
+            for projectUsingVENV in self.storedData.projectList
+            if projectUsingVENV.virtualEnvironment == environmentToDelete.venvName
+        ]
+        warningText = (
+            f"Delete environment '{environmentToDelete.venvName}' and its folder?\n\n{environmentToDelete.venvPath}"
+        )
 
         # The following warns about deletion and which projects currently run using that Environment
         if projectsUsingVENV:
@@ -451,7 +478,11 @@ class MainWindow(QMainWindow):
         try:
             mpfProjects.createNewMPFProject(newProjectPath, newProjectDialog.projectName.text().strip())
             self.storedData.addProject(
-                Project(newProjectDialog.projectName.text().strip(), str(newProjectPath), newProjectDialog.environmentPair.currentData())
+                Project(
+                    newProjectDialog.projectName.text().strip(),
+                    str(newProjectPath),
+                    newProjectDialog.environmentPair.currentData(),
+                )
             )
         except (OSError, ValueError) as exc:
             self._error(str(exc))
@@ -474,8 +505,7 @@ class MainWindow(QMainWindow):
             responseDialogForMissingProject = QMessageBox.question(
                 self,
                 "Add project",
-                f"'{pathToCheck}' has no config/config.yaml, so it does not look like an MPF project. "
-                "Add it anyway?",
+                f"'{pathToCheck}' has no config/config.yaml, so it does not look like an MPF project. Add it anyway?",
             )
             if responseDialogForMissingProject != QMessageBox.StandardButton.Yes:
                 return
@@ -498,7 +528,7 @@ class MainWindow(QMainWindow):
     def runMPFProject(self) -> None:
         projectToRun = self.selectedProject()
 
-        # The following catches situations where a project or environment are not 
+        # The following catches situations where a project or environment are not
         # setup properly
         if not projectToRun:
             return
@@ -516,14 +546,14 @@ class MainWindow(QMainWindow):
         if not environment.executable("mpf").exists():
             self._error(f"MPF is not installed in '{environment.venvName}' ({environment.executable('mpf')}).")
             return
-        
+
         # The following catches exceptions related to extra arguments
         try:
             extraArguments = shlex.split(self.extraRunArguments.text())
         except ValueError as argumentException:
             self._error(f"Invalid extra arguments: {argumentException}")
             return
-        
+
         if mpfRunMode == "game" and self.runMediaControllerOption.isChecked():
             extraArguments.insert(0, "-b")
 

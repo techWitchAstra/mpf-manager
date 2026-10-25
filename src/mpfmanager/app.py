@@ -1,7 +1,7 @@
 """mpf-Manager applicaton launch script"""
 
 #   app.py - Responsible for launching the application and its GUI
-# 
+#
 #   Written by techWitchAstra
 #
 #   Code in this file may be adapted, re-written, or re-architected
@@ -10,14 +10,15 @@
 
 from __future__ import annotations
 
-#Import System Module
+# Import System Module
 import sys
 
-#Import QApplication from PySide6
+# Import QApplication from PySide6
 from PySide6.QtWidgets import QApplication
 
-#Import UI from UI folder
+# Import UI from UI folder
 from mpfmanager.ui.mainWindow import MainWindow
+
 
 # The following defines the main application activity or routine
 def main() -> None:
@@ -31,8 +32,9 @@ def main() -> None:
     managerWindow = MainWindow()
     managerWindow.show()
 
-    #Qt Closing line to pass exit code on exit
+    # Qt Closing line to pass exit code on exit
     sys.exit(managerApplication.exec())
+
 
 # Prevent the main routine from being called upon import instead of upon execution
 if __name__ == "__main__":

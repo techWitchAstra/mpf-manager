@@ -2,7 +2,7 @@
 
 #   yamlInterfacer - Responsible for imporation and exportation of yaml
 #       files and data as necessary to accomplish tasks in the application
-# 
+#
 #   Written by techWitchAstra
 #
 #   Code in this file may be adapted, re-written, or re-architected
@@ -17,6 +17,7 @@ from typing import Any
 
 # Importation of the ruamel.yaml library matching MPF
 from ruamel.yaml import YAML
+
 
 # The following function sets up the YAML intepreter to be used for
 # reading yaml files for our needs.
@@ -35,6 +36,7 @@ def _yaml() -> YAML:
     yamlInterpreter.width = 4096
     return yamlInterpreter
 
+
 # The following function loads the yaml files
 def loadYAML(filePath: Path) -> Any:
     """Function for loading YAML files based on a filepath"""
@@ -45,8 +47,9 @@ def loadYAML(filePath: Path) -> Any:
 
     # If presuming all above if statements do not return true, then we
     # load up the yaml file
-    with filePath.open("r",encoding="utf-8") as yamlFile:
+    with filePath.open("r", encoding="utf-8") as yamlFile:
         return _yaml().load(yamlFile)
+
 
 # The following function writes the yaml files
 def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None) -> None:
@@ -61,18 +64,15 @@ def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None)
 
     # The following try attempts to write the data to the file
     try:
-
         # The following opens the temp file
         with tmpFile.open("w", encoding="utf-8") as fileObject:
-
             # The following checks if a header string exists
             if headerString:
-
                 # If a header string did exist, it is written first
                 fileObject.write(headerString.rstrip("\n") + "\n")
 
             # The YAML Data is then written to the file
-            _yaml().dump(dataToWrite,fileObject)
+            _yaml().dump(dataToWrite, fileObject)
 
         # The temp file then is moved to be the actual file
         tmpFile.replace(filePath)

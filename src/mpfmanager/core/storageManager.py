@@ -1,7 +1,7 @@
 """Manages the storage of environment and project information in home folder yaml folders"""
 
 #   storageManager - Responsible for storing and processing environment, setting, and project information
-# 
+#
 #   Written by techWitchAstra
 #
 #   Code in this file may be adapted, re-written, or re-architected
@@ -19,6 +19,7 @@ from mpfmanager.core import yamlInterfacer
 
 STORE_VERSION = 1
 
+
 # The following function determines the default config information storage location
 def default_home() -> Path:
     """Outputs a path object where the configuration data will be stored for the application"""
@@ -29,6 +30,7 @@ def default_home() -> Path:
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return base / "mpfmanager"
+
 
 # The following creates a class to store environment information in for use in this and other functions
 @dataclass
@@ -49,12 +51,13 @@ class VirtualEnvironment:
         """Path of a console script (e.g. 'mpf') inside this environment."""
         if os.name == "nt":
             return self.venvPath / "Scripts" / f"{venvName}.exe"
-        return self.venvPath/ "bin" / venvName
+        return self.venvPath / "bin" / venvName
 
     # The following property returns if a virtual environment exists or not
     @property
     def exists(self) -> bool:
         return (self.venvPath / "pyvenv.cfg").exists()
+
 
 # The following creates a class to store project information in for use in this and other functions
 @dataclass
@@ -63,12 +66,14 @@ class Project:
     projectPath: str
     virtualEnvironment: str | None = None
 
+
 # The following creates a settings class to store user settings in.
 @dataclass
 class Settings:
     venvDirectory: str = ""
     projectDirectory: str = ""
     includePreReleases: bool = False
+
 
 # The following class is used to process storage operations within MPF Manager
 class StorageProcessor:
@@ -98,7 +103,7 @@ class StorageProcessor:
         for settingKey in asdict(self.settings):
             if settingKey in settings:
                 setattr(self.settings, settingKey, settings[settingKey])
-        
+
         # The following loads the virtual environments list data from the config
         # yaml into an object
         self.environmentList = [
@@ -152,15 +157,16 @@ class StorageProcessor:
         self.environmentList.append(environmentToAdd)
         self.saveConfiguration()
 
-
     def removeVENV(self, nameEnvironmentToRemove: str) -> None:
         """removes a given virtual environment from the class"""
 
         # Below removes the environment to be removed from the list of environments
         # if it exists
-        self.environmentList = [environment for environment in self.environmentList if environment.venvName != nameEnvironmentToRemove]
-        
-        # The following removes the environment for any projects that listed the 
+        self.environmentList = [
+            environment for environment in self.environmentList if environment.venvName != nameEnvironmentToRemove
+        ]
+
+        # The following removes the environment for any projects that listed the
         # environment being removed
         for project in self.projectList:
             if project.virtualEnvironment == nameEnvironmentToRemove:
@@ -173,7 +179,9 @@ class StorageProcessor:
     def getProjectbyPath(self, projectPath: str) -> Project | None:
         """gives a project object when given a path to a project"""
         resolvedPath = str(Path(projectPath).resolve())
-        return next((project for project in self.projectList if str(Path(project.projectPath).resolve()) == resolvedPath), None)
+        return next(
+            (project for project in self.projectList if str(Path(project.projectPath).resolve()) == resolvedPath), None
+        )
 
     # The following adds a project to the class given the project
     def addProject(self, project: Project) -> None:
@@ -182,7 +190,7 @@ class StorageProcessor:
         # The following checks to see if the project is already registered
         if self.getProjectbyPath(project.projectPath):
             raise ValueError(f"Project at '{project.projectPath}' is already registered")
-        
+
         # If the project does not exist it adds it to the configuration
         self.projectList.append(project)
         self.saveConfiguration()
@@ -190,9 +198,11 @@ class StorageProcessor:
     # The following removes a project from the class given the path
     def removeProject(self, projectToBeRemovedpath: str) -> None:
         """removes a project from the class when given a project path"""
-        
+
         resolvedPath = str(Path(projectToBeRemovedpath).resolve())
-        self.projectList = [project for project in self.projectList if str(Path(project.projectPath).resolve()) != resolvedPath]
+        self.projectList = [
+            project for project in self.projectList if str(Path(project.projectPath).resolve()) != resolvedPath
+        ]
         self.saveConfiguration()
 
     # The following sets a virtual environment for a project

@@ -1,7 +1,7 @@
 """projectManager manages the mpf projects including running them and setting them up"""
 
 #   projectManager - Responsible for managing and launching projects
-# 
+#
 #   Written by techWitchAstra
 #
 #   Code in this file may be adapted, re-written, or re-architected
@@ -15,8 +15,8 @@ from pathlib import Path
 
 from mpfmanager.core.storageManager import VirtualEnvironment
 
-# The following sets up a generic MPF Template that will be used 
-# to give the program/player a building off point. This will likely be 
+# The following sets up a generic MPF Template that will be used
+# to give the program/player a building off point. This will likely be
 # depricated in future versions as the editor builds out
 CONFIG_VERSION = 6
 _CONFIG_VERSION_RE = re.compile(r"^#config_version=(\d+)")
@@ -64,18 +64,21 @@ HARDWARE_MODES = {
     "Smart virtual (-X)": ["-X"],
 }
 
+
 # The Following Outputs the main MPF config's path
 def mainConfigPath(projectPath: Path) -> Path:
     """returns the path for the main mpf config given a project path"""
     return projectPath / "config" / "config.yaml"
 
-# The following checks if there is a mpf project at a path based on 
+
+# The following checks if there is a mpf project at a path based on
 # if there is a config file in the correct location.
 def checkMPFProjectAtPath(testMPFPath: Path) -> bool:
     """returns true if a config exists at a given test projectPath"""
     return mainConfigPath(testMPFPath).is_file()
 
-# The following checks to see what MPF config version exists at a given 
+
+# The following checks to see what MPF config version exists at a given
 # project Path
 def checkConfigVersion(testConfigpath: Path) -> int | None:
     """checks what version is listed in a given path to a config.yaml"""
@@ -90,6 +93,7 @@ def checkConfigVersion(testConfigpath: Path) -> int | None:
         match = _CONFIG_VERSION_RE.match(fileData.readline().strip())
     return int(match.group(1)) if match else None
 
+
 # The following creates a new skeleton MPF project given a pathm and project name
 def createNewMPFProject(newProjectPath: Path, projectName: str | None = None) -> Path:
     """creates a skeleton mpf project at a given path"""
@@ -99,18 +103,24 @@ def createNewMPFProject(newProjectPath: Path, projectName: str | None = None) ->
         raise FileExistsError(f"'{newProjectPath}' already exists and is not empty")
 
     # If the directory/config does not exist, it is created and written to the drive including
-    # directories to hold shows, modes, and the basic config file    
+    # directories to hold shows, modes, and the basic config file
     projectName = projectName or newProjectPath.name
     (newProjectPath / "config").mkdir(parents=True)
     for folder in ("modes", "shows"):
-        (newProjectPath/ folder).mkdir()
+        (newProjectPath / folder).mkdir()
     mainConfigPath(newProjectPath).write_text(
         MAIN_CONFIG_TEMPLATE.format(version=CONFIG_VERSION, projectName=projectName), encoding="utf-8"
     )
     return newProjectPath
 
-# The following command launches MPF 
-def runMPF(virtualEnvironment: VirtualEnvironment, mpfLaunchMode: str, hardwareArguements: list[str], additionalLaunchPackages: list[str]) -> list[str]:
+
+# The following command launches MPF
+def runMPF(
+    virtualEnvironment: VirtualEnvironment,
+    mpfLaunchMode: str,
+    hardwareArguements: list[str],
+    additionalLaunchPackages: list[str],
+) -> list[str]:
     """can be used to start MPF and run a game, but cannot use the MPF GUI"""
     cmd = [str(virtualEnvironment.executable("mpf")), mpfLaunchMode]
     if mpfLaunchMode in ("game", "both"):
