@@ -66,7 +66,7 @@ class CommandQueue(QObject):
 
     # The following function reads the output from a process
     def _read(self, readProc: QProcess) -> None:
-        readText = bytes(readProc.readAllStandardOutput()).decode(errors="replace").rstrip()
+        readText = bytes(readProc.readAllStandardOutput().data()).decode(errors="replace").rstrip()
         if readText:
             self.outputSignal.emit(readText)
 
@@ -129,7 +129,7 @@ class RunningProcess(QObject):
 
     # The following reads the output of the process
     def _read(self) -> None:
-        text = bytes(self.process.readAllStandardOutput()).decode(errors="replace").rstrip()
+        text = bytes(self.process.readAllStandardOutput().data()).decode(errors="replace").rstrip()
         if text:
             self.outputSignal.emit(text)
 
