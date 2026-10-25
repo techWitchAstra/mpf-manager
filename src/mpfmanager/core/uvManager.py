@@ -44,7 +44,7 @@ def locateUV() -> str:
             return find_uv_bin()
 
         # If it fails to find it in the user's system it will pass that
-        except FileExistsError:
+        except FileNotFoundError:
             pass
 
     # The Following Sets the UV Path    
