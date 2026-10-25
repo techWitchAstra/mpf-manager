@@ -188,7 +188,7 @@ class MainWindow(QMainWindow):
         # The following adds a button to open a selected MPF machine folder
         self.openProjectFolderButton = QPushButton("Open MPF machine folder")
         self.openProjectFolderButton.clicked.connect(
-            lambda: (p := self.selectedProject()) and _openMPFmachineFolder(Path(p.path))
+            lambda: (p := self.selectedProject()) and _openMPFmachineFolder(Path(p.projectPath))
         )
 
         # The following adds a button to remove a mpf project from the list
@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
                 status = "OK"
             self.projectListTable.setItem(row, 3, _item(status))
             self.projectListTable.setItem(row, 4, _item(projectTableItem.projectPath))
-            if selectedProject and projectTableItem.projectPath == selectedProject.path:
+            if selectedProject and projectTableItem.projectPath == selectedProject.projectPath:
                 self.projectListTable.selectRow(row)
         self._updateButtons()
 
@@ -372,7 +372,7 @@ class MainWindow(QMainWindow):
                 commandList.append(uvCMDs.setupVENV(plannedVENV.venvPath, plannedVENV.pythonVersion))
             if plannedVENV.packagesToRemove:
                 commandList.append(uvCMDs.uninstallVENVPackages(plannedVENV.venvPath, plannedVENV.packagesToRemove))
-            commandList.append(uvCMDs.installVENVPackages(plannedVENV.venvPath, plannedVENV.companionPackages))
+            commandList.append(uvCMDs.installVENVPackages(plannedVENV.venvPath, plannedVENV.mpfVersionRequirements))
         except uvCMDs.UvNotFoundError as exc:
             self._error(str(exc))
             return
@@ -391,7 +391,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 environment = self.storedData.getVENVbyName(plannedVENV.venvName)
-                environment.mpfVersion, environment.companionPackages = plannedVENV.mpfVersion, plannedVENV.companionPackages
+                environment.installedMPFVersion, environment.additionalPackages = plannedVENV.mpfVersion, plannedVENV.companionPackages
                 self.storedData.saveConfiguration()
             self.outputLogger(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}.")
             self.refreshMainWindow()
@@ -411,8 +411,8 @@ class MainWindow(QMainWindow):
             if not version:
                 self.outputLogger(f"mpf is not installed in '{environment.venvName}'.")
                 return
-            environment.mpfVersion = version
-            environment.companionPackages = [package for package in environment.companionPackages if package in packages]
+            environment.installedMPFVersion = version
+            environment.additionalPackages = [package for package in environment.additionalPackages if package in packages]
             self.storedData.saveConfiguration()
             installedPackageText = ", ".join(f"{package} {packages[package]}" for package in ("mpf", *environment.additionalPackages))
             self.outputLogger(f"'{environment.venvName}': {installedPackageText}")
@@ -480,7 +480,7 @@ class MainWindow(QMainWindow):
             if responseDialogForMissingProject != QMessageBox.StandardButton.Yes:
                 return
         try:
-            self.storedData.addProject(Project(pathToCheck.pathToCheck.name, str(pathToCheck)))
+            self.storedData.addProject(Project(pathToCheck.name, str(pathToCheck)))
         except ValueError as exc:
             self._error(str(exc))
             return
@@ -502,7 +502,7 @@ class MainWindow(QMainWindow):
         # setup properly
         if not projectToRun:
             return
-        environment = self.storedData.getVENVbyName(projectToRun.environment)
+        environment = self.storedData.getVENVbyName(projectToRun.virtualEnvironment)
         if not environment:
             self._error("Choose an environment for this project first.")
             return
@@ -531,10 +531,10 @@ class MainWindow(QMainWindow):
         runCommand = mpfProjects.runMPF(environment, mpfRunMode, self.hardwareOption.currentData(), extraArguments)
 
         # The following sets up the MPF Run Process and starts it
-        proc = RunningProcess(runCommand, Path(projectToRun.path), self)
-        proc.outputSignal.connect(lambda text, name=projectToRun.name: self.outputLogger(f"[{name}] {text}"))
+        proc = RunningProcess(runCommand, Path(projectToRun.projectPath), self)
+        proc.outputSignal.connect(lambda text, name=projectToRun.projectName: self.outputLogger(f"[{name}] {text}"))
         proc.stoppedSignal.connect(lambda code, p=projectToRun: self._project_stopped(p, code))
-        self.runningProcesses[projectToRun.path] = proc
+        self.runningProcesses[projectToRun.projectPath] = proc
         proc.startProcess()
 
         self.refreshMainWindow()
@@ -542,12 +542,12 @@ class MainWindow(QMainWindow):
     # The following is used to stop a mpf project
     def stopMPFProject(self) -> None:
         projectToStop = self.selectedProject()
-        if projectToStop and (process := self.runningProcesses.get(projectToStop.path)):
+        if projectToStop and (process := self.runningProcesses.get(projectToStop.projectPath)):
             process.stopProcess()
 
     # The following is used to process a project stopping
     def _project_stopped(self, stoppedProject: Project, stopCode: int) -> None:
-        if processStopped := self.runningProcesses.pop(stoppedProject.path, None):
+        if processStopped := self.runningProcesses.pop(stoppedProject.projectPath, None):
             processStopped.deleteLater()
         self.outputLogger(f"[{stoppedProject.projectName}] exited with code {stopCode}")
         self.refreshMainWindow()
