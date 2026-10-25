@@ -57,7 +57,7 @@ class PyPIRelease:
     # The following adds a Pre-Release Check
     @property
     def isPreRelease(self) -> bool:
-        return self.parsed.isPreRelease
+        return self.parsed.is__prerelease
 
 # The following parses through all of the pypi release data for a minimum required python version
 def pypiReleaseProcessor(releaseData: dict) -> list[PyPIRelease]:
@@ -173,7 +173,7 @@ def companionReleasePicker(companionPackage: str, mpfVersion: str, companionRele
     #The following sets the mpf version as the version passed to the function
     mpf = Version(mpfVersion)
 
-    companionReleaseCanidates = filterPyPIReleases(companionReleases, includePreReleases or mpf.isPreRelease)
+    companionReleaseCanidates = filterPyPIReleases(companionReleases, includePreReleases or mpf.is_prerelease)
 
     if companionPackage == "mpf-monitor" and mpf >= Version("0.80.0.dev0"):
         return next((release for release in companionReleaseCanidates if release.parsed.major >= 1), None)
