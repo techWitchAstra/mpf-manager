@@ -131,7 +131,7 @@ class StorageProcessor:
             "environmentList": [asdict(environment) for environment in self.environmentList],
             "projectList": [asdict(project) for project in self.projectList],
         }
-        yamlInterfacer.writeYAML(data, self.savePath, header="# MPF-Manager configuration")
+        yamlInterfacer.writeYAML(data, self.savePath, headerString="# MPF-Manager configuration")
 
     # VirtualEnvironment Specific Functions
 
