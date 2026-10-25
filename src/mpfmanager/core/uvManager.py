@@ -57,6 +57,8 @@ def locateUV() -> str:
             "uv separately (not-recommended)"
         )
 
+    return uvPath
+
 # The following sets up the virtual environment using a specific path 
 # and python version
 def setupVENV(filePath: Path, pythonVersion: str) -> list[str]:
