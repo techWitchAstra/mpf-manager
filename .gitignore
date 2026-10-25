@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+#Remove user specific workspace settings
+*.code-workspace
+.vscode/

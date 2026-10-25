@@ -1,0 +1,46 @@
+[project]
+name = "mpf-manager"
+version = "0.1.0"
+description = "Utility for managing MPF and Python Virtual Environments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "certifi>2024.2.2",
+    "packaging>=24.0",
+    "pyside6>=6.8",
+    "ruamel-yaml>=0.18",
+    "truststore>=0.9",
+    "uv>=0.5",
+]
+
+[project.scripts]
+mpf-manager = "mpfmanager:main"
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.17.1",
+    "pyright>=1.1.390",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N"]
+ignore = ["N999", "N802", "N806", "N801", "E501", "N803","N815"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
+
+[tool.uv.build-backend]
+module-name = "mpfmanager"

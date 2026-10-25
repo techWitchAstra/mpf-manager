@@ -1,0 +1,84 @@
+"""Ruamel.yaml based yaml interpreter and associated functions"""
+
+#   yamlInterfacer - Responsible for imporation and exportation of yaml
+#       files and data as necessary to accomplish tasks in the application
+#
+#   Written by techWitchAstra
+#
+#   Code in this file may be adapted, re-written, or re-architected
+#       from code from Claude.  None of the code in this file is a direct
+#       result of AI agents, and has been overseen by a human at all stages
+
+from __future__ import annotations
+
+# Importation for paths as well as being able to import the Any type
+from pathlib import Path
+from typing import Any
+
+# Importation of the ruamel.yaml library matching MPF
+from ruamel.yaml import YAML
+
+
+# The following function sets up the YAML intepreter to be used for
+# reading yaml files for our needs.
+def _yaml() -> YAML:
+    """Yaml Processor"""
+
+    # Configuration of YAML processor, including type of yaml in relation
+    # to comments, indentation settings for the yaml, preferences for
+    # flow style, and line width.
+    # For MPF we want to use round trip to preserve comment location,
+    # default flow style off since it accepts multiple, and we want
+    # to have a long width to allow for long single lines
+    yamlInterpreter = YAML(typ="rt")
+    yamlInterpreter.indent(mapping=2, sequence=4, offset=2)
+    yamlInterpreter.default_flow_style = False
+    yamlInterpreter.width = 4096
+    return yamlInterpreter
+
+
+# The following function loads the yaml files
+def loadYAML(filePath: Path) -> Any:
+    """Function for loading YAML files based on a filepath"""
+
+    # The following if statement checks to see if the file path exists
+    if not filePath.exists():
+        return None
+
+    # If presuming all above if statements do not return true, then we
+    # load up the yaml file
+    with filePath.open("r", encoding="utf-8") as yamlFile:
+        return _yaml().load(yamlFile)
+
+
+# The following function writes the yaml files
+def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None) -> None:
+    """Function for writing YAML files based on data, a file path, and a header string"""
+
+    # The following checks to see if the parent directories exist,
+    # and creates it if not
+    filePath.parent.mkdir(parents=True, exist_ok=True)
+
+    # The following creates a temporary file to work in
+    tmpFile = filePath.with_suffix(filePath.suffix + ".tmp")
+
+    # The following try attempts to write the data to the file
+    try:
+        # The following opens the temp file
+        with tmpFile.open("w", encoding="utf-8") as fileObject:
+            # The following checks if a header string exists
+            if headerString:
+                # If a header string did exist, it is written first
+                fileObject.write(headerString.rstrip("\n") + "\n")
+
+            # The YAML Data is then written to the file
+            _yaml().dump(dataToWrite, fileObject)
+
+        # The temp file then is moved to be the actual file
+        tmpFile.replace(filePath)
+
+    # The following catches any exceptions and does not write them to
+    # the file
+    except BaseException:
+        tmpFile.unlink(missing_ok=True)
+        raise
