@@ -121,13 +121,13 @@ def jsonRetriever(jsonURL: str, connectionTimeout: float = 15) -> dict:
                 raise
             failureAttempts.append(f"{certificateSource}:{urlException}")
 
-        # The following raises and outputs the reason for the connection failure
-        raise ConnectionError(
-            "Could not verify HTTPS certificate for PyPI. If you are behind"
-            "a proxy or anti-virus that inspects HTTPS you may need to add "
-            "PyPI's certificate to your system trust store. \n"
-            "\n".join(failureAttempts)
-        )
+    # The following raises and outputs the reason for the connection failure
+    raise ConnectionError(
+        "Could not verify HTTPS certificate for PyPI. If you are behind"
+        "a proxy or anti-virus that inspects HTTPS you may need to add "
+        "PyPI's certificate to your system trust store. \n"
+        "\n".join(failureAttempts)
+    )
 
 # The following function utilizes the jsonRetriever to get the pypi release
 # informatin for a given package
