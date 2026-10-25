@@ -25,6 +25,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-qt>=4.5.0",
     "ruff>=0.17.1",
+    "pyright>=1.1.390",
 ]
 
 [tool.ruff]
@@ -40,3 +41,6 @@ ignore = ["N999", "N802", "N806"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
+
+[tool.uv.build-backend]
+module-name = "mpfmanager"
