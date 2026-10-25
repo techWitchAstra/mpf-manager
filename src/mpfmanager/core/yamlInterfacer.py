@@ -46,7 +46,7 @@ def loadYAML(filePath: Path) -> Any:
     # If presuming all above if statements do not return true, then we
     # load up the yaml file
     with filePath.open("r",encoding="utf-8") as yamlFile:
-        return _yaml().loadYAML(yamlFile)
+        return _yaml().load(yamlFile)
 
 # The following function writes the yaml files
 def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None) -> None:
@@ -72,7 +72,7 @@ def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None)
                 fileObject.write(headerString.rstrip("\n") + "\n")
 
             # The YAML Data is then written to the file
-            _yaml().writeYAML(dataToWrite,fileObject)
+            _yaml().dump(dataToWrite,fileObject)
 
         # The temp file then is moved to be the actual file
         tmpFile.replace(filePath)
