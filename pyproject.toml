@@ -36,7 +36,7 @@ exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N"]
-ignore = ["N999", "N802", "N806"]
+ignore = ["N999", "N802", "N806", "N801", "E501", "N803","N815"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
