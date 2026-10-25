@@ -24,7 +24,7 @@ _CONFIG_VERSION_RE = re.compile(r"^#config_version=(\d+)")
 MAIN_CONFIG_TEMPLATE = """\
 #config_version={version}
 
-# Main machine config for {name}.
+# Main machine config for {projectName}.
 # See https://missionpinball.org for the full configuration reference.
 
 hardware:
@@ -100,7 +100,7 @@ def createNewMPFProject(newProjectPath: Path, projectName: str | None = None) ->
 
     # If the directory/config does not exist, it is created and written to the drive including
     # directories to hold shows, modes, and the basic config file    
-    projectName = projectName or newProjectPath.projectName
+    projectName = projectName or newProjectPath.name
     (newProjectPath / "config").mkdir(parents=True)
     for folder in ("modes", "shows"):
         (newProjectPath/ folder).mkdir()
