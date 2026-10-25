@@ -77,7 +77,7 @@ def pypiReleaseProcessor(releaseData: dict) -> list[PyPIRelease]:
             Version(pypiVersion)
         except InvalidVersion:
             continue
-        requiredPython = next((filePointer.get("require_python") for filePointer in releaseFiles if filePointer.get("requires_python")), None)
+        requiredPython = next((filePointer.get("requires_python") for filePointer in releaseFiles if filePointer.get("requires_python")), None)
         
         # The following appends a release to the list object
         pypiReleases.append(PyPIRelease(pypiVersion,requiredPython))
@@ -123,10 +123,10 @@ def jsonRetriever(jsonURL: str, connectionTimeout: float = 15) -> dict:
 
     # The following raises and outputs the reason for the connection failure
     raise ConnectionError(
-        "Could not verify HTTPS certificate for PyPI. If you are behind"
+        "Could not verify HTTPS certificate for PyPI. If you are behind "
         "a proxy or anti-virus that inspects HTTPS you may need to add "
         "PyPI's certificate to your system trust store. \n"
-        "\n".join(failureAttempts)
+        + "\n".join(failureAttempts)
     )
 
 # The following function utilizes the jsonRetriever to get the pypi release
@@ -173,7 +173,7 @@ def companionReleasePicker(companionPackage: str, mpfVersion: str, companionRele
     #The following sets the mpf version as the version passed to the function
     mpf = Version(mpfVersion)
 
-    companionReleaseCanidates = filterPyPIReleases(companionReleases, includePreReleases or mpf.is_prerelease)
+    companionReleaseCanidates = filterPyPIReleases(companionReleases, includePreReleases or mpf.isPreRelease)
 
     if companionPackage == "mpf-monitor" and mpf >= Version("0.80.0.dev0"):
         return next((release for release in companionReleaseCanidates if release.parsed.major >= 1), None)
