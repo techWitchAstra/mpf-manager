@@ -266,8 +266,11 @@ class MainWindow(QMainWindow):
         selectedRow = self.venvAvailableTable.currentRow()
         if selectedRow < 0 or not self.venvAvailableTable.selectedItems():
             return None
+        selectedItem = self.venvAvailableTable.item(selectedRow, 0)
+        if selectedItem is None:
+            return None
         return self.storedData.getVENVbyName(
-            self.venvAvailableTable.item(selectedRow, 0).data(Qt.ItemDataRole.UserRole)
+            selectedItem.data(Qt.ItemDataRole.UserRole)
         )
 
     # The following outputs the selected project
@@ -275,7 +278,10 @@ class MainWindow(QMainWindow):
         row = self.projectListTable.currentRow()
         if row < 0 or not self.projectListTable.selectedItems():
             return None
-        return self.storedData.getProjectbyPath(self.projectListTable.item(row, 0).data(Qt.ItemDataRole.UserRole))
+        selectedProjectItem = self.projectListTable.item(row, 0)
+        if selectedProjectItem is None:
+            return None
+        return self.storedData.getProjectbyPath(selectedProjectItem.data(Qt.ItemDataRole.UserRole))
 
     # The following refreshes the main Window
     def refreshMainWindow(self) -> None:
@@ -405,6 +411,9 @@ class MainWindow(QMainWindow):
                 )
             else:
                 environment = self.storedData.getVENVbyName(plannedVENV.venvName)
+                if environment is None:
+                                    self.outputLogger(f"Environment '{plannedVENV.venvName}' is no longer registered.")
+                                    return
                 environment.installedMPFVersion, environment.additionalPackages = (
                     plannedVENV.mpfVersion,
                     plannedVENV.companionPackages,
