@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 
 # The following imports the needed parts of the application from other files
 from mpfmanager.core import projectManager as mpfProjects
-from mpfmanager.core import uv as uvCMDs
+from mpfmanager.core import uvManager as uvCMDs
 from mpfmanager.core.storageManager import VirtualEnvironment, Project, StorageProcessor
 from mpfmanager.ui.dialogs import (
     VENVManagementDialog,
@@ -50,7 +50,7 @@ from mpfmanager.ui.dialogs import (
     SettingsDialog,
     environmentPairing,
 )
-from mpfmanager.ui.uiWorkers import CommandQueue, RunningProcess, run_in_thread
+from mpfmanager.ui.uiWorkers import CommandQueue, RunningProcess, runInThread
 
 # The following creates a table widget to be called later in the application
 def _table(headers: list[str]) -> QTableWidget:
@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.storedData = storedData or StorageProcessor()
         self.commandQueue = CommandQueue(self)
-        self.commandQueue.output.connect(self.logResult)
+        self.commandQueue.outputSignal.connect(self.outputLogger)
         self.commandQueue.busyChangedSignal.connect(self._updateButtons)
         self.runningProcesses: dict[str, RunningProcess] = {}
 
@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
         settings.triggered.connect(self.edit_settings)
         menu.addAction(settings)
         open_config = QAction("Open config &folder", self)
-        open_config.triggered.connect(lambda: _openMPFmachineFolder(self.storedData.home))
+        open_config.triggered.connect(lambda: _openMPFmachineFolder(self.storedData.homePath))
         menu.addAction(open_config)
         menu.addSeparator()
         quit_action = QAction("&Quit", self)
@@ -260,7 +260,7 @@ class MainWindow(QMainWindow):
         selectedRow = self.venvAvailableTable.currentRow()
         if selectedRow < 0 or not self.venvAvailableTable.selectedItems():
             return None
-        return self.storedData.get_environment(self.venvAvailableTable.item(selectedRow, 0).data(Qt.ItemDataRole.UserRole))
+        return self.storedData.getVENVbyName(self.venvAvailableTable.item(selectedRow, 0).data(Qt.ItemDataRole.UserRole))
 
     # The following outputs the selected project
     def selectedProject(self) -> Project | None:
@@ -270,56 +270,56 @@ class MainWindow(QMainWindow):
         return self.storedData.getProjectbyPath(self.projectListTable.item(row, 0).data(Qt.ItemDataRole.UserRole))
 
     # The following refreshes the main Window
-    def refresh(self) -> None:
+    def refreshMainWindow(self) -> None:
 
         # The following updates the virtualEnvironmentTable
         selectedVENV = self.selectedEnvironment()
         self.venvAvailableTable.setRowCount(0)
-        for environment in self.storedData.environments:
+        for environment in self.storedData.environmentList:
             row = self.venvAvailableTable.rowCount()
             self.venvAvailableTable.insertRow(row)
-            self.venvAvailableTable.setItem(row, 0, _item(environment.name, environment.name))
-            self.venvAvailableTable.setItem(row, 1, _item(environment.mpf_version))
-            self.venvAvailableTable.setItem(row, 2, _item(environment.python))
-            self.venvAvailableTable.setItem(row, 3, _item(", ".join(environment.extras)))
+            self.venvAvailableTable.setItem(row, 0, _item(environment.venvName, environment.venvName))
+            self.venvAvailableTable.setItem(row, 1, _item(environment.installedMPFVersion))
+            self.venvAvailableTable.setItem(row, 2, _item(environment.installedPython))
+            self.venvAvailableTable.setItem(row, 3, _item(", ".join(environment.additionalPackages)))
             self.venvAvailableTable.setItem(row, 4, _item("OK" if environment.exists else "Missing"))
-            self.venvAvailableTable.setItem(row, 5, _item(environment.path))
-            if selectedVENV and environment.name == selectedVENV.name:
+            self.venvAvailableTable.setItem(row, 5, _item(environment.pathToVENV))
+            if selectedVENV and environment.venvName == selectedVENV.venvName:
                 self.venvAvailableTable.selectRow(row)
 
         # The following updates the project information table
-        self.selectedProject = self.selectedProject()
+        selectedProject = self.selectedProject()
         self.projectListTable.setRowCount(0)
 
-        for projectTableItem in self.storedData.projects:
+        for projectTableItem in self.storedData.projectList:
             row = self.projectListTable.rowCount()
-            path = Path(projectTableItem.path)
+            path = Path(projectTableItem.projectPath)
             self.projectListTable.insertRow(row)
-            self.projectListTable.setItem(row, 0, _item(projectTableItem.name, projectTableItem.path))
-            combo = environmentPairing(self.storedData, projectTableItem.environment)
+            self.projectListTable.setItem(row, 0, _item(projectTableItem.projectName, projectTableItem.projectPath))
+            combo = environmentPairing(self.storedData, projectTableItem.virtualEnvironment)
             combo.currentIndexChanged.connect(
-                lambda _i, p=projectTableItem.path, c=combo: self._setProjectEnvironment(p, c.currentData())
+                lambda _i, p=projectTableItem.projectPath, c=combo: self._setProjectEnvironment(p, c.currentData())
             )
             self.projectListTable.setCellWidget(row, 1, combo)
-            version = mpfProjects.config_version(path)
+            version = mpfProjects.checkConfigVersion(path)
             self.projectListTable.setItem(row, 2, _item(f"v{version}" if version else "—"))
-            if projectTableItem.path in self.runningProcesses:
+            if projectTableItem.projectPath in self.runningProcesses:
                 status = "Running"
             elif not path.exists():
                 status = "Missing"
-            elif not mpfProjects.is_mpf_project(path):
+            elif not mpfProjects.checkMPFProjectAtPath(path):
                 status = "No config/config.yaml"
             else:
                 status = "OK"
             self.projectListTable.setItem(row, 3, _item(status))
-            self.projectListTable.setItem(row, 4, _item(projectTableItem.path))
-            if selectedProject and projectTableItem.path == selectedProject.path:
+            self.projectListTable.setItem(row, 4, _item(projectTableItem.projectPath))
+            if selectedProject and projectTableItem.projectPath == selectedProject.path:
                 self.projectListTable.selectRow(row)
         self._updateButtons()
 
     # The Following updates the button States
     def _updateButtons(self) -> None:
-        idle = not self.commandQueue.busy
+        idle = not self.commandQueue.isBusy
         environment = self.selectedEnvironment()
         self.newVENVButton.setEnabled(idle)
         for b in (self.changeVENVButton, self.verifyVENVButton, self.deleteVENVButton):
@@ -328,7 +328,7 @@ class MainWindow(QMainWindow):
         self.openVENVButton.setEnabled(environment is not None and environment.exists)
 
         projectTableItem = self.selectedProject()
-        running = projectTableItem is not None and projectTableItem.path in self.runningProcesses
+        running = projectTableItem is not None and projectTableItem.projectPath in self.runningProcesses
         self.openProjectFolderButton.setEnabled(projectTableItem is not None)
         self.removeProjectButton.setEnabled(projectTableItem is not None and not running)
         self.runMPFButton.setEnabled(projectTableItem is not None and not running)
@@ -352,7 +352,7 @@ class MainWindow(QMainWindow):
             folder = str(dialog.venvParentFolderPath())
             if folder != self.storedData.settings.venvDirectory:
                 self.storedData.settings.venvDirectory = folder
-                self.storedData.save()
+                self.storedData.saveConfiguration()
             self._applyPlan(dialog.plan(), create=True)
 
     # The following changes the MPF related to a selected VENV
@@ -370,7 +370,7 @@ class MainWindow(QMainWindow):
             commandList = []
             if create:
                 commandList.append(uvCMDs.setupVENV(plannedVENV.venvPath, plannedVENV.pythonVersion))
-            if plannedVENV.remove:
+            if plannedVENV.packagesToRemove:
                 commandList.append(uvCMDs.uninstallVENVPackages(plannedVENV.venvPath, plannedVENV.packagesToRemove))
             commandList.append(uvCMDs.installVENVPackages(plannedVENV.venvPath, plannedVENV.companionPackages))
         except uvCMDs.UvNotFoundError as exc:
@@ -381,9 +381,9 @@ class MainWindow(QMainWindow):
         def done(ok: bool) -> None:
             # The following is called to output the reason an environment failed to setup
             if not ok:
-                self.logResult("Environment setup failed; see the output above.")
+                self.outputLogger("Environment setup failed; see the output above.")
                 if create and plannedVENV.venvPath.exists():
-                    self.logResult(f"The partial environment was left at {plannedVENV.venvPath}")
+                    self.outputLogger(f"The partial environment was left at {plannedVENV.venvPath}")
                 return
             if create:
                 self.storedData.addVENV(
@@ -392,8 +392,8 @@ class MainWindow(QMainWindow):
             else:
                 environment = self.storedData.getVENVbyName(plannedVENV.venvName)
                 environment.mpfVersion, environment.companionPackages = plannedVENV.mpfVersion, plannedVENV.companionPackages
-                self.storedData.save()
-            self.logResult(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}.")
+                self.storedData.saveConfiguration()
+            self.outputLogger(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}.")
             self.refreshMainWindow()
 
         self.commandQueue.run(commandList, done)
@@ -403,22 +403,22 @@ class MainWindow(QMainWindow):
         environment = self.selectedEnvironment()
         if not environment:
             return
-        self.logResult(f"Checking packages in '{environment.venvName}'…")
+        self.outputLogger(f"Checking packages in '{environment.venvName}'…")
 
         # The following processes the finish of the verification process
         def done(packages: dict[str, str]) -> None:
             version = packages.get("mpf")
             if not version:
-                self.logResult(f"mpf is not installed in '{environment.venvName}'.")
+                self.outputLogger(f"mpf is not installed in '{environment.venvName}'.")
                 return
             environment.mpfVersion = version
             environment.companionPackages = [package for package in environment.companionPackages if package in packages]
-            self.storedData.save()
-            installedPackageText = ", ".join(f"{package} {packages[package]}" for package in ("mpf", *environment.extras))
-            self.logResult(f"'{environment.name}': {installedPackageText}")
+            self.storedData.saveConfiguration()
+            installedPackageText = ", ".join(f"{package} {packages[package]}" for package in ("mpf", *environment.additionalPackages))
+            self.outputLogger(f"'{environment.venvName}': {installedPackageText}")
             self.refreshMainWindow()
 
-        run_in_thread(lambda: uvCMDs.listVENVPackages(environment.venvPath), done, self.logResult)
+        runInThread(lambda: uvCMDs.listVENVPackages(environment.venvPath), done, self.outputLogger)
 
     # The following function deletes virtual environments when necessary
     def deleteVENV(self) -> None:
@@ -437,7 +437,7 @@ class MainWindow(QMainWindow):
             # Only remove folders that really are virtual environments.
             shutil.rmtree(environmentToDelete.venvPath, ignore_errors=True)
         self.storedData.removeVENV(environmentToDelete.venvName)
-        self.logResult(f"Deleted environment '{environmentToDelete.venvName}'.")
+        self.outputLogger(f"Deleted environment '{environmentToDelete.venvName}'.")
         self.refreshMainWindow()
 
     # project ui actions
@@ -447,16 +447,16 @@ class MainWindow(QMainWindow):
         newProjectDialog = mpfProjectCreationDialog(self.storedData, self)
         if not newProjectDialog.exec():
             return
-        newProjectPath = newProjectDialog.path()
+        newProjectPath = newProjectDialog.projectPath()
         try:
             mpfProjects.createNewMPFProject(newProjectPath, newProjectDialog.projectName.text().strip())
             self.storedData.addProject(
-                Project(newProjectDialog.projectName.text().strip(), str(newProjectPath), newProjectDialog.virtualEnvironment.currentData())
+                Project(newProjectDialog.projectName.text().strip(), str(newProjectPath), newProjectDialog.environmentPair.currentData())
             )
         except (OSError, ValueError) as exc:
             self._error(str(exc))
             return
-        self.logResult(f"Created MPF project at {newProjectPath}")
+        self.outputLogger(f"Created MPF project at {newProjectPath}")
         self.tabs.setCurrentIndex(1)
         self.refreshMainWindow()
 
@@ -480,7 +480,7 @@ class MainWindow(QMainWindow):
             if responseDialogForMissingProject != QMessageBox.StandardButton.Yes:
                 return
         try:
-            self.storedData.addProject(Project(pathToCheck.projectName, str(pathToCheck)))
+            self.storedData.addProject(Project(pathToCheck.pathToCheck.name, str(pathToCheck)))
         except ValueError as exc:
             self._error(str(exc))
             return
@@ -491,7 +491,7 @@ class MainWindow(QMainWindow):
         projectToRemove = self.selectedProject()
         if projectToRemove:
             self.storedData.removeProject(projectToRemove.projectPath)
-            self.logResult(f"Removed '{projectToRemove.projectName}' from the list (files were not deleted).")
+            self.outputLogger(f"Removed '{projectToRemove.projectName}' from the list (files were not deleted).")
             self.refreshMainWindow()
 
     # The following is used to run a mpf project
@@ -502,19 +502,19 @@ class MainWindow(QMainWindow):
         # setup properly
         if not projectToRun:
             return
-        environment = self.storedData.get_environment(projectToRun.environment)
+        environment = self.storedData.getVENVbyName(projectToRun.environment)
         if not environment:
             self._error("Choose an environment for this project first.")
             return
         mpfRunMode = self.runModeOption.currentData()
-        if mpfRunMode in ("both", "mc") and "mpf-mc" not in environment.extras:
-            self._error(f"'{environment.name}' does not have mpf-mc installed.")
+        if mpfRunMode in ("both", "mc") and "mpf-mc" not in environment.additionalPackages:
+            self._error(f"'{environment.venvName}' does not have mpf-mc installed.")
             return
-        if mpfRunMode == "monitor" and "mpf-monitor" not in environment.extras:
-            self._error(f"'{environment.name}' does not have mpf-monitor installed.")
+        if mpfRunMode == "monitor" and "mpf-monitor" not in environment.additionalPackages:
+            self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
         if not environment.executable("mpf").exists():
-            self._error(f"MPF is not installed in '{environment.name}' ({environment.executable('mpf')}).")
+            self._error(f"MPF is not installed in '{environment.venvName}' ({environment.executable('mpf')}).")
             return
         
         # The following catches exceptions related to extra arguments
@@ -528,14 +528,14 @@ class MainWindow(QMainWindow):
             extraArguments.insert(0, "-b")
 
         # The following sets up the command for the process
-        runCommand = mpfProjects.run_command(environment, mpfRunMode, self.hardwareOption.currentData(), extraArguments)
+        runCommand = mpfProjects.runMPF(environment, mpfRunMode, self.hardwareOption.currentData(), extraArguments)
 
         # The following sets up the MPF Run Process and starts it
         proc = RunningProcess(runCommand, Path(projectToRun.path), self)
-        proc.output.connect(lambda text, name=projectToRun.name: self.logResult(f"[{name}] {text}"))
-        proc.stopped.connect(lambda code, p=projectToRun: self._project_stopped(p, code))
+        proc.outputSignal.connect(lambda text, name=projectToRun.name: self.outputLogger(f"[{name}] {text}"))
+        proc.stoppedSignal.connect(lambda code, p=projectToRun: self._project_stopped(p, code))
         self.runningProcesses[projectToRun.path] = proc
-        proc.start()
+        proc.startProcess()
 
         self.refreshMainWindow()
 
@@ -543,13 +543,13 @@ class MainWindow(QMainWindow):
     def stopMPFProject(self) -> None:
         projectToStop = self.selectedProject()
         if projectToStop and (process := self.runningProcesses.get(projectToStop.path)):
-            process.stop()
+            process.stopProcess()
 
     # The following is used to process a project stopping
     def _project_stopped(self, stoppedProject: Project, stopCode: int) -> None:
         if processStopped := self.runningProcesses.pop(stoppedProject.path, None):
             processStopped.deleteLater()
-        self.logResult(f"[{stoppedProject.projectName}] exited with code {stopCode}")
+        self.outputLogger(f"[{stoppedProject.projectName}] exited with code {stopCode}")
         self.refreshMainWindow()
 
     # additional utiltities
@@ -558,13 +558,13 @@ class MainWindow(QMainWindow):
     def edit_settings(self) -> None:
         settingsDialog = SettingsDialog(self.storedData.settings, self)
         if settingsDialog.exec():
-            settingsDialog.apply(self.storedData.settings)
-            self.storedData.save()
+            settingsDialog.applySettings(self.storedData.settings)
+            self.storedData.saveConfiguration()
 
     # The following is used to close the application
     def closeEvent(self, closeEvent) -> None:  # noqa: N802 - Qt override
 
         # The following closes all of the running processes upon a close event
         for processToStop in list(self.runningProcesses.values()):
-            processToStop.stop()
+            processToStop.stopProcess()
         super().closeEvent(closeEvent)
