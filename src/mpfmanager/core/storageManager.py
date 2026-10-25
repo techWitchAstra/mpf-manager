@@ -1,5 +1,13 @@
 """Manages the storage of environment and project information in home folder yaml folders"""
 
+#   storageManager - Responsible for storing and processing environment, setting, and project information
+# 
+#   Written by techWitchAstra
+#
+#   Code in this file may be adapted, re-written, or re-architected
+#       from code from Claude.  None of the code in this file is a direct
+#       result of AI agents, and has been overseen by a human by a human at all stages
+
 from __future__ import annotations
 
 # The following imports libraries related to writing storage data to a yaml via the yaml Interfacer
@@ -27,7 +35,7 @@ def default_home() -> Path:
 class VirtualEnvironment:
     venvName: str
     pathToVENV: str
-    installedpython: str
+    installedPython: str
     installedMPFVersion: str
     additionalPackages: list[str] = field(default_factory=list)
 
@@ -97,8 +105,8 @@ class StorageProcessor:
             VirtualEnvironment(
                 venvName=str(environment["venvName"]),
                 pathToVENV=str(environment["pathToVENV"]),
-                installedpython=str(environment.get("installedPython", "")),
-                installedMPFversion=str(environment.get("installedMPFversion", "")),
+                installedPython=str(environment.get("installedPython", "")),
+                installedMPFVersion=str(environment.get("installedMPFVersion", "")),
                 additionalPackages=[str(x) for x in environment.get("additionalPackages") or []],
             )
             for environment in data.get("environmentList") or []
@@ -111,7 +119,7 @@ class StorageProcessor:
                 projectPath=str(project["projectPath"]),
                 virtualEnvironment=project.get("virtualEnvironment"),
             )
-            for project in data.get("projects") or []
+            for project in data.get("projectList") or []
         ]
 
     # The following saves the configuration data for mpf-manager using yamlInterfacer
@@ -123,22 +131,22 @@ class StorageProcessor:
             "environmentList": [asdict(environment) for environment in self.environmentList],
             "projectList": [asdict(project) for project in self.projectList],
         }
-        yamlInterfacer.writeYAML(data, self.path, header="# MPF-Manager configuration")
+        yamlInterfacer.writeYAML(data, self.savePath, header="# MPF-Manager configuration")
 
     # VirtualEnvironment Specific Functions
 
     # The following finds a virtual environment given a name
     def getVENVbyName(self, venvName: str | None) -> VirtualEnvironment | None:
         """gives the virtual environment data class for a given virtualEnvironment Name"""
-        return next((environment for environment in self.environments if environment.venvName == venvName), None)
+        return next((environment for environment in self.environmentList if environment.venvName == venvName), None)
 
     # The following adds a virtual environment given the virtual environment object
     def addVENV(self, environmentToAdd: VirtualEnvironment) -> None:
         """adds a given virtual environment to the class"""
 
         # The following checks to see if the virtual environment already exists
-        if self.getVENVbyName(environmentToAdd.name):
-            raise ValueError(f"A virtual environment named '{environmentToAdd.name}' already exists")
+        if self.getVENVbyName(environmentToAdd.venvName):
+            raise ValueError(f"A virtual environment named '{environmentToAdd.venvName}' already exists")
 
         # If the virtual environment doesn't already exist in the list then it is added
         self.environmentList.append(environmentToAdd)
@@ -150,11 +158,11 @@ class StorageProcessor:
 
         # Below removes the environment to be removed from the list of environments
         # if it exists
-        self.environmentList = [environment for environment in self.environmentList if environment.name != nameEnvironmentToRemove]
+        self.environmentList = [environment for environment in self.environmentList if environment.venvName != nameEnvironmentToRemove]
         
         # The following removes the environment for any projects that listed the 
         # environment being removed
-        for project in self.projects:
+        for project in self.projectList:
             if project.virtualEnvironment == nameEnvironmentToRemove:
                 project.virtualEnvironment = None
         self.saveConfiguration()
