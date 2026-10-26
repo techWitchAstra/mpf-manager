@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
         self.commandQueue = CommandQueue(self)
         self.commandQueue.outputSignal.connect(self.outputLogger)
         self.commandQueue.busyChangedSignal.connect(self._updateButtons)
-        self.runningProcesses: dict[str, list[RunningProcess]] = {}
+        self.runningProcesses: dict[str, dict[str, RunningProcess]] = {}
 
         # The following sets up the application window
         self.setWindowTitle("MPF-Manager")
@@ -238,8 +238,8 @@ class MainWindow(QMainWindow):
         self.stopMPFButton.clicked.connect(self.stopMPFProject)
 
         self.runMPFMonitorCheckBox = QCheckBox("Run MPF-Monitor?")
-        self.runMPFMonitorCheckBox.toolTip = ("Check to run monitor when opening MPF")
-        self.runMPFMonitorCheckBox.currentIndexChanged(self._updateRunOptions())
+        self.runMPFMonitorCheckBox.setToolTip("Check to run monitor when opening MPF")
+        self.runModeOption.currentIndexChanged.connect(self._updateRunOptions)
 
         # The following lays out the run configuration buttons
         runConfigurationLayout = QHBoxLayout()
@@ -247,7 +247,7 @@ class MainWindow(QMainWindow):
         runConfigurationLayout.addWidget(self.runModeOption)
         runConfigurationLayout.addWidget(self.hardwareOption)
         runConfigurationLayout.addWidget(self.runMediaControllerOption)
-        runConfigurationLayout.addWidget(self.runMPFMonitor)
+        runConfigurationLayout.addWidget(self.runMPFMonitorCheckBox)
         runConfigurationLayout.addWidget(self.extraRunArguments, 1)
         runConfigurationLayout.addWidget(self.runMPFButton)
         runConfigurationLayout.addWidget(self.stopMPFButton)
@@ -366,7 +366,6 @@ class MainWindow(QMainWindow):
         if not monitorAllowed:
             self.runMPFMonitorCheckBox.setChecked(False)
         self.runMediaControllerOption.setEnabled(self.runModeOption.currentData() == "game")
-
 
     # The following catches MPF-Manager errors for the main window
     def _error(self, message: str) -> None:
@@ -568,7 +567,7 @@ class MainWindow(QMainWindow):
         if mpfRunMode == "monitor" and "mpf-monitor" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
-        if self.runMonitorOption.isChecked() and "mpf-monitor" not in environment.additionalPackages:
+        if self.runMPFMonitorCheckBox.isChecked() and "mpf-monitor" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
         if not environment.executable("mpf").exists():
@@ -585,13 +584,13 @@ class MainWindow(QMainWindow):
         if mpfRunMode == "game" and self.runMediaControllerOption.isChecked():
             extraArguments.insert(0, "-b")
 
-               # The following sets up the commands for the game and, if requested, the monitor
+            # The following sets up the commands for the game and, if requested, the monitor
         runCommands = mpfProjects.runMPFWithMonitor(
             environment,
             mpfRunMode,
             self.hardwareOption.currentData(),
             extraArguments,
-            self.runMonitorOption.isChecked(),
+            self.runMPFMonitorCheckBox.isChecked(),
         )
 
         # The following starts the game, and schedules the monitor to start once the game has had time to start up
@@ -613,12 +612,26 @@ class MainWindow(QMainWindow):
         for process in reversed(list(self.runningProcesses.get(projectToStop.projectPath, {}).values())):
             process.stopProcess()
 
-    # The following is used to process a project stopping
-    def _project_stopped(self, stoppedProject: Project, stopCode: int) -> None:
-        if processStopped := self.runningProcesses.pop(stoppedProject.projectPath, None):
-            processStopped.deleteLater()
-        self.outputLogger(f"[{stoppedProject.projectName}] exited with code {stopCode}")
-        self.refreshMainWindow()
+        # The following processes one of a project's processes stopping
+
+    def _processStopped(self, project: Project, process: RunningProcess, label: str, stopCode: int) -> None:
+        self.outputLogger(f"[{project.projectName}/{label}] exited with code {stopCode}")
+
+        # The following removes the stopped process from the project's running processes
+        projectProcesses = self.runningProcesses.get(project.projectPath, {})
+        if projectProcesses.get(label) is process:
+            del projectProcesses[label]
+        process.deleteLater()
+
+        # The monitor cannot do anything without the game, so it is stopped when the game stops
+        if label == "game":
+            for remainingProcess in list(projectProcesses.values()):
+                remainingProcess.stopProcess()
+
+        # Once nothing is left running, the project is no longer marked as running
+        if not projectProcesses:
+            self.runningProcesses.pop(project.projectPath, None)
+            self.refreshMainWindow()
 
     # additional utiltities
 
@@ -639,6 +652,7 @@ class MainWindow(QMainWindow):
         super().closeEvent(closeEvent)
 
         # The following starts one MPF related process for a project and tracks it under a label
+
     def _startProjectProcess(self, project: Project, command: list[str], label: str) -> RunningProcess:
         process = RunningProcess(command, Path(project.projectPath), self)
         process.outputSignal.connect(
@@ -652,6 +666,7 @@ class MainWindow(QMainWindow):
         return process
 
         # The following starts the monitor only if the same game it was scheduled for is still running
+
     def _startDelayedMonitor(self, project: Project, monitorCommand: list[str], gameProcess: RunningProcess) -> None:
         projectProcesses = self.runningProcesses.get(project.projectPath, {})
         if projectProcesses.get("game") is not gameProcess:
@@ -659,5 +674,3 @@ class MainWindow(QMainWindow):
             return
         self._startProjectProcess(project, monitorCommand, "monitor")
         self.refreshMainWindow()
-
-        
