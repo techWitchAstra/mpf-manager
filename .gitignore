@@ -222,3 +222,5 @@ __marimo__/
 #Remove user specific workspace settings
 *.code-workspace
 .vscode/
+
+!packaging/mpf-manager.spec
