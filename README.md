@@ -1,16 +1,16 @@
 # mpf-manager
 A tool to manage MPF Projects, and data related to them
 
-Current plan for 0.1 is to manage virtual environments for different mpf and python combinations, keep track of projects, what their current virtual environment is, as well as launch mpf
+# To Setup
+Download the respective zip folder for your OS, and the application is inside
 
-To Setup
-```
-python -m venv mpf-manager-env
-mpf-manager-env/bin/pip install .          # Windows: mpf-manager-env\Scripts\pip install .
-```
+# To Run
+Run the Application or EXE after it is extracted from the zip.
 
-To Run
+## Setting up an Enironment
 
-```
-mpf-manager-env/bin/mpf-manager            # or: mpf-manager-env/bin/python -m mpf_manager
-```
+To give you maximum flexibility you setup MPF in a pair with a version of python and mpf add ons.  Think of it like a recipe that you can order (MPF 0.81 + Monitor on Python 3.14).  Each of your projects can then call up this recipe
+
+## Seetting up a Project
+
+A project contains a link to the mpf machine folder to run, as well as what environment to use to run the game.  This can be changed at any time to upgrade, downgrade, or change which add-ons are enabled with a project.
