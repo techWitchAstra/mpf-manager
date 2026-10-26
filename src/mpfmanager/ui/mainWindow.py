@@ -16,7 +16,7 @@ import shutil
 from pathlib import Path
 
 # The following imports the used Qt assets for Main Window
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
         self.commandQueue = CommandQueue(self)
         self.commandQueue.outputSignal.connect(self.outputLogger)
         self.commandQueue.busyChangedSignal.connect(self._updateButtons)
-        self.runningProcesses: dict[str, RunningProcess] = {}
+        self.runningProcesses: dict[str, list[RunningProcess]] = {}
 
         # The following sets up the application window
         self.setWindowTitle("MPF-Manager")
@@ -237,12 +237,17 @@ class MainWindow(QMainWindow):
         self.stopMPFButton = QPushButton("Stop MPF")
         self.stopMPFButton.clicked.connect(self.stopMPFProject)
 
+        self.runMPFMonitorCheckBox = QCheckBox("Run MPF-Monitor?")
+        self.runMPFMonitorCheckBox.toolTip = ("Check to run monitor when opening MPF")
+        self.runMPFMonitorCheckBox.currentIndexChanged(self._updateRunOptions())
+
         # The following lays out the run configuration buttons
         runConfigurationLayout = QHBoxLayout()
         runConfigurationLayout.addWidget(QLabel("Run:"))
         runConfigurationLayout.addWidget(self.runModeOption)
         runConfigurationLayout.addWidget(self.hardwareOption)
         runConfigurationLayout.addWidget(self.runMediaControllerOption)
+        runConfigurationLayout.addWidget(self.runMPFMonitor)
         runConfigurationLayout.addWidget(self.extraRunArguments, 1)
         runConfigurationLayout.addWidget(self.runMPFButton)
         runConfigurationLayout.addWidget(self.stopMPFButton)
@@ -253,6 +258,9 @@ class MainWindow(QMainWindow):
         projectTabLayout.addWidget(self.projectListTable)
         projectTabLayout.addLayout(projectManagementButtonBar)
         projectTabLayout.addLayout(runConfigurationLayout)
+
+        self._updateRunOptions()
+
         return projectTabPage
 
     # The following utilities help accomplish functions in the mainWindow
@@ -316,7 +324,8 @@ class MainWindow(QMainWindow):
             version = mpfProjects.checkConfigVersion(path)
             self.projectListTable.setItem(row, 2, _item(f"v{version}" if version else "—"))
             if projectTableItem.projectPath in self.runningProcesses:
-                status = "Running"
+                runningLabels = self.runningProcesses[projectTableItem.projectPath]
+                status = "Running (game + monitor)" if "monitor" in runningLabels else "Running"
             elif not path.exists():
                 status = "Missing"
             elif not mpfProjects.checkMPFProjectAtPath(path):
@@ -349,6 +358,15 @@ class MainWindow(QMainWindow):
     # The following sets the project environment
     def _setProjectEnvironment(self, path: str, env_name: str | None) -> None:
         self.storedData.setProjectVENV(path, env_name)
+
+    # The following enables the monitor option only for run modes that a monitor can attach to
+    def _updateRunOptions(self) -> None:
+        monitorAllowed = self.runModeOption.currentData() in mpfProjects.MONITOR_COMPATIBLE_MODES
+        self.runMPFMonitorCheckBox.setEnabled(monitorAllowed)
+        if not monitorAllowed:
+            self.runMPFMonitorCheckBox.setChecked(False)
+        self.runMediaControllerOption.setEnabled(self.runModeOption.currentData() == "game")
+
 
     # The following catches MPF-Manager errors for the main window
     def _error(self, message: str) -> None:
@@ -550,6 +568,9 @@ class MainWindow(QMainWindow):
         if mpfRunMode == "monitor" and "mpf-monitor" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
+        if self.runMonitorOption.isChecked() and "mpf-monitor" not in environment.additionalPackages:
+            self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
+            return
         if not environment.executable("mpf").exists():
             self._error(f"MPF is not installed in '{environment.venvName}' ({environment.executable('mpf')}).")
             return
@@ -564,22 +585,32 @@ class MainWindow(QMainWindow):
         if mpfRunMode == "game" and self.runMediaControllerOption.isChecked():
             extraArguments.insert(0, "-b")
 
-        # The following sets up the command for the process
-        runCommand = mpfProjects.runMPF(environment, mpfRunMode, self.hardwareOption.currentData(), extraArguments)
+               # The following sets up the commands for the game and, if requested, the monitor
+        runCommands = mpfProjects.runMPFWithMonitor(
+            environment,
+            mpfRunMode,
+            self.hardwareOption.currentData(),
+            extraArguments,
+            self.runMonitorOption.isChecked(),
+        )
 
-        # The following sets up the MPF Run Process and starts it
-        proc = RunningProcess(runCommand, Path(projectToRun.projectPath), self)
-        proc.outputSignal.connect(lambda text, name=projectToRun.projectName: self.outputLogger(f"[{name}] {text}"))
-        proc.stoppedSignal.connect(lambda code, p=projectToRun: self._project_stopped(p, code))
-        self.runningProcesses[projectToRun.projectPath] = proc
-        proc.startProcess()
+        # The following starts the game, and schedules the monitor to start once the game has had time to start up
+        gameProcess = self._startProjectProcess(projectToRun, runCommands[0], "game")
+        if len(runCommands) > 1:
+            monitorCommand = runCommands[1]
+            QTimer.singleShot(
+                mpfProjects.MONITOR_START_DELAY_MS,
+                lambda: self._startDelayedMonitor(projectToRun, monitorCommand, gameProcess),
+            )
 
         self.refreshMainWindow()
 
-    # The following is used to stop a mpf project
+    # The following is used to stop a mpf project, stopping the monitor before the game
     def stopMPFProject(self) -> None:
         projectToStop = self.selectedProject()
-        if projectToStop and (process := self.runningProcesses.get(projectToStop.projectPath)):
+        if not projectToStop:
+            return
+        for process in reversed(list(self.runningProcesses.get(projectToStop.projectPath, {}).values())):
             process.stopProcess()
 
     # The following is used to process a project stopping
@@ -601,7 +632,32 @@ class MainWindow(QMainWindow):
     # The following is used to close the application
     def closeEvent(self, closeEvent) -> None:  # noqa: N802 - Qt override
 
-        # The following closes all of the running processes upon a close event
-        for processToStop in list(self.runningProcesses.values()):
-            processToStop.stopProcess()
+        # The following closes all of the running processes upon a close event, monitors before games
+        for projectProcesses in list(self.runningProcesses.values()):
+            for processToStop in reversed(list(projectProcesses.values())):
+                processToStop.stopProcess()
         super().closeEvent(closeEvent)
+
+        # The following starts one MPF related process for a project and tracks it under a label
+    def _startProjectProcess(self, project: Project, command: list[str], label: str) -> RunningProcess:
+        process = RunningProcess(command, Path(project.projectPath), self)
+        process.outputSignal.connect(
+            lambda text, name=project.projectName, tag=label: self.outputLogger(f"[{name}/{tag}] {text}")
+        )
+        process.stoppedSignal.connect(
+            lambda code, p=project, proc=process, tag=label: self._processStopped(p, proc, tag, code)
+        )
+        self.runningProcesses.setdefault(project.projectPath, {})[label] = process
+        process.startProcess()
+        return process
+
+        # The following starts the monitor only if the same game it was scheduled for is still running
+    def _startDelayedMonitor(self, project: Project, monitorCommand: list[str], gameProcess: RunningProcess) -> None:
+        projectProcesses = self.runningProcesses.get(project.projectPath, {})
+        if projectProcesses.get("game") is not gameProcess:
+            self.outputLogger(f"[{project.projectName}] the game is no longer running, so the monitor was not started")
+            return
+        self._startProjectProcess(project, monitorCommand, "monitor")
+        self.refreshMainWindow()
+
+        
