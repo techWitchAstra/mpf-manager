@@ -131,10 +131,13 @@ def runMPF(
         cmd += ["-t", *hardwareArguements]
     return cmd + additionalLaunchPackages
 
-def runMPFWithMonitor(virtualEnvironment, mpfLaunchMode, hardwareArguements, additonalLaunchPackages, startMonitor) -> list[list[str]]:
+
+def runMPFWithMonitor(
+    virtualEnvironment, mpfLaunchMode, hardwareArguements, additonalLaunchPackages, startMonitor
+) -> list[list[str]]:
     """returns the game command and the monitor commands"""
 
-    commandList = [runMPF(virtualEnvironment,mpfLaunchMode,hardwareArguements,additonalLaunchPackages)]
+    commandList = [runMPF(virtualEnvironment, mpfLaunchMode, hardwareArguements, additonalLaunchPackages)]
     if startMonitor and mpfLaunchMode in MONITOR_COMPATIBLE_MODES:
-        commandList.append(runMPF(virtualEnvironment,"monitor",[],[]))
+        commandList.append(runMPF(virtualEnvironment, "monitor", [], []))
     return commandList
