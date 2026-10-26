@@ -14,8 +14,10 @@ from __future__ import annotations
 # The following imports json, shell utility and sub process packages
 # for later use
 import json
+import os
 import shutil
 import subprocess
+import sys
 
 # Import file path objects
 from pathlib import Path
@@ -30,6 +32,13 @@ class UvNotFoundError(RuntimeError):
 # to be used
 def locateUV() -> str:
     """UV Locator"""
+
+    if getattr(sys, "frozen", False):
+        bundleFolder = getattr(sys, "_MEIPASS", None)
+        if bundleFolder:
+            bundledUV = Path(bundleFolder) / ("uv.exe" if os.name == "nt" else "uv")
+            if bundledUV.exists():
+                return str(bundledUV)
 
     # The following Try attempts to work out the file path for UV
     try:
