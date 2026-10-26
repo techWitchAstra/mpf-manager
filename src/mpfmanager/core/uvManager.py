@@ -34,9 +34,11 @@ def locateUV() -> str:
     """UV Locator"""
 
     if getattr(sys, "frozen", False):
-        bundledUV = Path(sys._MEIPASS) / ("uv.exe" if os.name == "nt" else "uv")
-        if bundledUV.exists():
-            return str(bundledUV)
+        bundleFolder = getattr(sys, "_MEIPASS", None)
+        if bundleFolder:
+            bundledUV = Path(bundleFolder) / ("uv.exe" if os.name == "nt" else "uv")
+            if bundledUV.exists():
+                return str(bundledUV)
 
     # The following Try attempts to work out the file path for UV
     try:
