@@ -21,6 +21,9 @@ from mpfmanager.core.storageManager import VirtualEnvironment
 CONFIG_VERSION = 6
 _CONFIG_VERSION_RE = re.compile(r"^#config_version=(\d+)")
 
+MONITOR_START_DELAY_MS = 2000
+MONITOR_COMPATIBLE_MODES = ("game", "both")
+
 MAIN_CONFIG_TEMPLATE = """\
 #config_version={version}
 
@@ -48,7 +51,7 @@ modes:
 """
 
 # What MPF can be asked to do from the manager, mapped to its CLI subcommand.
-# To be added - GMC related launching, and both game and monitor
+# To be added - GMC related launching
 RUN_MODES = {
     "Game": "game",
     "Game + Media Controller (mpf-mc)": "both",
@@ -127,3 +130,11 @@ def runMPF(
         # The text UI needs a real terminal, which a GUI-launched process doesn't have.
         cmd += ["-t", *hardwareArguements]
     return cmd + additionalLaunchPackages
+
+def runMPFWithMonitor(virtualEnvironment, mpfLaunchMode, hardwareArguements, additonalLaunchPackages, startMonitor) -> list[list[str]]:
+    """returns the game command and the monitor commands"""
+
+    commandList = [runMPF(virtualEnvironment,mpfLaunchMode,hardwareArguements,additonalLaunchPackages)]
+    if startMonitor and mpfLaunchMode in MONITOR_COMPATIBLE_MODES:
+        commandList.append(runMPF(virtualEnvironment,"monitor",[],[]))
+    return commandList
