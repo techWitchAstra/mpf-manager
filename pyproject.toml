@@ -1,6 +1,6 @@
 [project]
 name = "mpf-manager"
-version = "0.1.0"
+version = "0.1.1"
 description = "Utility for managing MPF and Python Virtual Environments"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,7 @@ dev = [
     "ruff>=0.17.1",
     "pyright>=1.1.390",
 ]
+build = ["pyinstaller>=6.11"]
 
 [tool.ruff]
 line-length = 120
