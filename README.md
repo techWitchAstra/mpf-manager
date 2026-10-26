@@ -11,4 +11,6 @@ mpf-manager-env/bin/pip install .          # Windows: mpf-manager-env\Scripts\pi
 
 To Run
 
-```mpf-manager-env/bin/mpf-manager            # or: mpf-manager-env/bin/python -m mpf_manager```
+```
+mpf-manager-env/bin/mpf-manager            # or: mpf-manager-env/bin/python -m mpf_manager
+```
