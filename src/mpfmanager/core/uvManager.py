@@ -14,9 +14,9 @@ from __future__ import annotations
 # The following imports json, shell utility and sub process packages
 # for later use
 import json
+import os
 import shutil
 import subprocess
-import os
 import sys
 
 # Import file path objects
