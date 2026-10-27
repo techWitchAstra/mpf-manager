@@ -17,7 +17,7 @@ from pathlib import Path
 
 # The following imports the used Qt assets for Main Window
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase
+from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -51,6 +51,8 @@ from mpfmanager.ui.dialogs import (
     venvDialogData,
 )
 from mpfmanager.ui.uiWorkers import CommandQueue, RunningProcess, runInThread
+
+from typing import cast
 
 
 # The following creates a table widget to be called later in the application
@@ -367,13 +369,16 @@ class MainWindow(QMainWindow):
 
         # The following enables only the run options that the selected project's environment supports
 
+        # The following enables only the run options that the selected project's environment supports
+
     def _updateRunOptions(self) -> None:
         selectedProject = self.selectedProject()
         environment = self.storedData.getVENVbyName(selectedProject.virtualEnvironment) if selectedProject else None
         gmcAllowed = mpfProjects.isGMCEligible(environment)
 
         # The following disables the GMC modes for MPF before 0.80, and mpf-mc modes for 0.80 and after
-        runModeModel = self.runModeOption.model()
+        # QComboBox.model() is typed as QAbstractItemModel, but is a QStandardItemModel by default
+        runModeModel = cast(QStandardItemModel, self.runModeOption.model())
         for index in range(self.runModeOption.count()):
             mode = self.runModeOption.itemData(index)
             enabled = True
