@@ -10,8 +10,13 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import sys
 from pathlib import Path
+
+from packaging.version import InvalidVersion, Version
 
 from mpfmanager.core.storageManager import VirtualEnvironment
 
@@ -23,6 +28,12 @@ _CONFIG_VERSION_RE = re.compile(r"^#config_version=(\d+)")
 
 MONITOR_START_DELAY_MS = 2000
 MONITOR_COMPATIBLE_MODES = ("game", "both")
+
+GMC_MIN_MPF_VERSION = Version("0.80.0.dev0")
+GMC_START_DELAY_MS = 2000
+
+GODOT_EXECUTABLE_NAMES = ("godot", "godot4", "Godot", "godot.exe", "Godot.exe")
+GODOT_MACOS_APP_PATH = Path("/Applications/Godot.app/Contents/MacOS/Godot")
 
 MAIN_CONFIG_TEMPLATE = """\
 #config_version={version}
@@ -51,13 +62,20 @@ modes:
 """
 
 # What MPF can be asked to do from the manager, mapped to its CLI subcommand.
-# To be added - GMC related launching
 RUN_MODES = {
     "Game": "game",
     "Game + Media Controller (mpf-mc)": "both",
     "Media Controller only (mpf-mc)": "mc",
+    "Game + GMC (Godot)": "gmc",
+    "GMC only (Godot)": "gmconly",
     "Monitor (mpf-monitor)": "monitor",
 }
+
+# The following groups the run modes by which media controller they need
+MPF_MC_MODES = ("both", "mc")
+GMC_MODES = ("gmc", "gmconly")
+
+MONITOR_COMPATIBLE_MODES = ("game", "both", "gmc")
 
 # Hardware flags for `mpf game`.
 # To be added, with/without media controller
@@ -97,6 +115,54 @@ def checkConfigVersion(testConfigpath: Path) -> int | None:
     return int(match.group(1)) if match else None
 
 
+# The following checks if a virtual environment's MPF version can use the Godot Media Controller
+def isGMCEligible(virtualEnvironment: VirtualEnvironment | None) -> bool:
+    """returns true if the environment has MPF 0.80 or newer installed"""
+    if virtualEnvironment is None or not virtualEnvironment.installedMPFVersion:
+        return False
+    try:
+        return Version(virtualEnvironment.installedMPFVersion) >= GMC_MIN_MPF_VERSION
+    except InvalidVersion:
+        return False
+
+
+# The following looks for a Godot project in a MPF machine folder, either at
+# the root or one folder down (e.g. machine/gmc/project.godot)
+def findGodotProject(projectPath: Path) -> Path | None:
+    """returns the folder containing project.godot, or None if one can't be found"""
+    if (projectPath / "project.godot").is_file():
+        return projectPath
+    if not projectPath.is_dir():
+        return None
+    return next(
+        (
+            subFolder
+            for subFolder in sorted(projectPath.iterdir())
+            if subFolder.is_dir() and (subFolder / "project.godot").is_file()
+        ),
+        None,
+    )
+
+
+# The following attempts to find an installed copy of Godot, this is only used to
+# fill in the setting, the path in settings always wins
+def detectGodotExecutable() -> str | None:
+    """returns the path to an installed godot executable if one can be found"""
+    for executableName in GODOT_EXECUTABLE_NAMES:
+        if foundExecutable := shutil.which(executableName):
+            return foundExecutable
+    if sys.platform == "darwin" and GODOT_MACOS_APP_PATH.is_file():
+        return str(GODOT_MACOS_APP_PATH)
+    return None
+
+
+# The following checks that a configured godot path points at something runnable
+def checkGodotExecutable(godotExecutable: str) -> bool:
+    """returns true if the given godot path exists and can be executed"""
+    godotPath = Path(godotExecutable)
+    return bool(godotExecutable) and godotPath.is_file() and os.access(godotPath, os.X_OK)
+
+
 # The following creates a new skeleton MPF project given a pathm and project name
 def createNewMPFProject(newProjectPath: Path, projectName: str | None = None) -> Path:
     """creates a skeleton mpf project at a given path"""
@@ -125,11 +191,22 @@ def runMPF(
     additionalLaunchPackages: list[str],
 ) -> list[str]:
     """can be used to start MPF and run a game, but cannot use the MPF GUI"""
-    cmd = [str(virtualEnvironment.executable("mpf")), mpfLaunchMode]
-    if mpfLaunchMode in ("game", "both"):
+    # GMC is launched separately through godot, so MPF itself only runs the game
+    mpfSubcommand = "game" if mpfLaunchMode == "gmc" else mpfLaunchMode
+    cmd = [str(virtualEnvironment.executable("mpf")), mpfSubcommand]
+    if mpfSubcommand in ("game", "both"):
         # The text UI needs a real terminal, which a GUI-launched process doesn't have.
         cmd += ["-t", *hardwareArguements]
     return cmd + additionalLaunchPackages
+
+
+# The following builds the command to launch a Godot (GMC) project
+def runGMC(godotExecutable: str, gmcProjectPath: Path, openEditor: bool = False) -> list[str]:
+    """returns the command to launch godot pointed at a GMC project"""
+    cmd = [godotExecutable, "--path", str(gmcProjectPath)]
+    if openEditor:
+        cmd.append("-e")
+    return cmd
 
 
 def runMPFWithMonitor(
