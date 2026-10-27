@@ -16,8 +16,9 @@ import shutil
 import sys
 from pathlib import Path
 
-from mpfmanager.core.storageManager import VirtualEnvironment
 from packaging.version import InvalidVersion, Version
+
+from mpfmanager.core.storageManager import VirtualEnvironment
 
 # The following sets up a generic MPF Template that will be used
 # to give the program/player a building off point. This will likely be

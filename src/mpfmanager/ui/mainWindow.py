@@ -14,6 +14,7 @@ from __future__ import annotations
 import shlex
 import shutil
 from pathlib import Path
+from typing import cast
 
 # The following imports the used Qt assets for Main Window
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -51,8 +52,6 @@ from mpfmanager.ui.dialogs import (
     venvDialogData,
 )
 from mpfmanager.ui.uiWorkers import CommandQueue, RunningProcess, runInThread
-
-from typing import cast
 
 
 # The following creates a table widget to be called later in the application
