@@ -46,3 +46,8 @@ qt_api = "pyside6"
 
 [tool.uv.build-backend]
 module-name = "mpfmanager"
+
+[tool.coverage.run]
+source = ["mpfmanager"]
+branch = true
+relative_files = true   # so Coveralls can match paths to your repo files
