@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 
 # The following imnports the needed mpf-manager related functions and classes
 from mpfmanager.core import compatibilityManager
+from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
 from mpfmanager.core.storageManager import Settings, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui.uiWorkers import runInThread
@@ -63,6 +65,23 @@ def _browseWidget(editWidget: QLineEdit, parentWidget: QWidget, widgetTitle: str
     browseButton.clicked.connect(
         lambda: (
             (d := QFileDialog.getExistingDirectory(parentWidget, widgetTitle, editWidget.text()))
+            and editWidget.setText(d)
+        )
+    )
+    browseWidgetLayout.addWidget(browseButton)
+    return browseWidget
+
+
+# The following creates a line edit with a browse button that picks a file instead of a folder
+def _browseFileWidget(editWidget: QLineEdit, parentWidget: QWidget, widgetTitle: str) -> QWidget:
+    browseWidget = QWidget()
+    browseWidgetLayout = QHBoxLayout(browseWidget)
+    browseWidgetLayout.setContentsMargins(0, 0, 0, 0)
+    browseWidgetLayout.addWidget(editWidget)
+    browseButton = QPushButton("Browse…")
+    browseButton.clicked.connect(
+        lambda: (
+            (d := QFileDialog.getOpenFileName(parentWidget, widgetTitle, editWidget.text())[0])
             and editWidget.setText(d)
         )
     )
@@ -441,6 +460,20 @@ class SettingsDialog(QDialog):
         settingsForm.addRow("Projects folder:", _browseWidget(self.projectDirectoryDialog, self, "Projects folder"))
         settingsForm.addRow("", self.preReleasesCheckBox)
 
+        self.godotExecutableDialog = QLineEdit(settings.godotExecutablePath)
+        self.godotExecutableDialog.setPlaceholderText("Path to an installed Godot 4 executable")
+
+        # The following adds a button to attempt to find an installed copy of godot
+        detectGodotButton = QPushButton("Detect")
+        detectGodotButton.clicked.connect(self._detectGodot)
+
+        godotRow = QHBoxLayout()
+        godotRow.addWidget(_browseFileWidget(self.godotExecutableDialog, self, "Godot executable"), 1)
+        godotRow.addWidget(detectGodotButton)
+
+        # ...existing rows...
+        settingsForm.addRow("Godot executable:", godotRow)
+
         # The following configures the dialog buttons for settings
         settingsDialogbuttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -453,11 +486,19 @@ class SettingsDialog(QDialog):
         settingsDialogLayout.addLayout(settingsForm)
         settingsDialogLayout.addWidget(settingsDialogbuttons)
 
+    # The following fills in the godot executable if one can be found
+    def _detectGodot(self) -> None:
+        if foundGodot := mpfProjects.detectGodotExecutable():
+            self.godotExecutableDialog.setText(foundGodot)
+        else:
+            QMessageBox.information(self, "Godot", "Godot could not be found, please browse to it.")
+
     # The following applies the settings
     def applySettings(self, settings: Settings) -> None:
         settings.venvDirectory = self.venvDirectoryDialog.text().strip()
         settings.projectDirectory = self.projectDirectoryDialog.text().strip()
         settings.includePreReleases = self.preReleasesCheckBox.isChecked()
+        settings.godotExecutablePath = self.godotExecutableDialog.text().strip()
 
 
 # The following creates a callable combo box to display the installed environment pairings
