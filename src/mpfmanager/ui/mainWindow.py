@@ -239,7 +239,12 @@ class MainWindow(QMainWindow):
 
         self.runMPFMonitorCheckBox = QCheckBox("Run MPF-Monitor?")
         self.runMPFMonitorCheckBox.setToolTip("Check to run monitor when opening MPF")
-        self.runModeOption.currentIndexChanged.connect(self._updateRunOptions)
+        self.runModeOption.currentIndexChanged.connect(
+            self._updateRunOptions
+        )  # The following lets the godot project be opened in the editor rather than run
+        self.openGodotEditorCheckBox = QCheckBox("Open in Godot editor")
+        self.openGodotEditorCheckBox.setToolTip("Opens the GMC project in the Godot editor instead of running it")
+        self.projectListTable.itemSelectionChanged.connect(self._updateRunOptions)
 
         # The following lays out the run configuration buttons
         runConfigurationLayout = QHBoxLayout()
@@ -248,6 +253,7 @@ class MainWindow(QMainWindow):
         runConfigurationLayout.addWidget(self.hardwareOption)
         runConfigurationLayout.addWidget(self.runMediaControllerOption)
         runConfigurationLayout.addWidget(self.runMPFMonitorCheckBox)
+        runConfigurationLayout.addWidget(self.openGodotEditorCheckBox)
         runConfigurationLayout.addWidget(self.extraRunArguments, 1)
         runConfigurationLayout.addWidget(self.runMPFButton)
         runConfigurationLayout.addWidget(self.stopMPFButton)
@@ -325,7 +331,7 @@ class MainWindow(QMainWindow):
             self.projectListTable.setItem(row, 2, _item(f"v{version}" if version else "—"))
             if projectTableItem.projectPath in self.runningProcesses:
                 runningLabels = self.runningProcesses[projectTableItem.projectPath]
-                status = "Running (game + monitor)" if "monitor" in runningLabels else "Running"
+                status = f"Running ({' + '.join(runningLabels)})"
             elif not path.exists():
                 status = "Missing"
             elif not mpfProjects.checkMPFProjectAtPath(path):
@@ -359,13 +365,54 @@ class MainWindow(QMainWindow):
     def _setProjectEnvironment(self, path: str, env_name: str | None) -> None:
         self.storedData.setProjectVENV(path, env_name)
 
-    # The following enables the monitor option only for run modes that a monitor can attach to
+        # The following enables only the run options that the selected project's environment supports
+
     def _updateRunOptions(self) -> None:
-        monitorAllowed = self.runModeOption.currentData() in mpfProjects.MONITOR_COMPATIBLE_MODES
+        selectedProject = self.selectedProject()
+        environment = self.storedData.getVENVbyName(selectedProject.virtualEnvironment) if selectedProject else None
+        gmcAllowed = mpfProjects.isGMCEligible(environment)
+
+        # The following disables the GMC modes for MPF before 0.80, and mpf-mc modes for 0.80 and after
+        runModeModel = self.runModeOption.model()
+        for index in range(self.runModeOption.count()):
+            mode = self.runModeOption.itemData(index)
+            enabled = True
+            if mode in mpfProjects.GMC_MODES:
+                enabled = gmcAllowed
+            elif mode in mpfProjects.MPF_MC_MODES and environment is not None:
+                enabled = not gmcAllowed
+            runModeModel.item(index).setEnabled(enabled)
+
+        # The following moves off a mode that is no longer allowed
+        if not runModeModel.item(self.runModeOption.currentIndex()).isEnabled():
+            self.runModeOption.setCurrentIndex(self.runModeOption.findData("game"))
+
+        currentMode = self.runModeOption.currentData()
+        monitorAllowed = currentMode in mpfProjects.MONITOR_COMPATIBLE_MODES
         self.runMPFMonitorCheckBox.setEnabled(monitorAllowed)
         if not monitorAllowed:
             self.runMPFMonitorCheckBox.setChecked(False)
-        self.runMediaControllerOption.setEnabled(self.runModeOption.currentData() == "game")
+        self.runMediaControllerOption.setEnabled(currentMode == "game")
+        self.openGodotEditorCheckBox.setEnabled(currentMode in mpfProjects.GMC_MODES)
+
+        # The following finds the GMC (godot) folder for a project, asking the user if it can't be found
+
+    def _resolveGMCPath(self, project: Project) -> Path | None:
+        if project.gmcFolderPath and (Path(project.gmcFolderPath) / "project.godot").is_file():
+            return Path(project.gmcFolderPath)
+        if foundPath := mpfProjects.findGodotProject(Path(project.projectPath)):
+            return foundPath
+
+        chosenFolder = QFileDialog.getExistingDirectory(
+            self, "Where is the GMC (Godot) project for this machine?", project.projectPath
+        )
+        if not chosenFolder:
+            return None
+        if not (Path(chosenFolder) / "project.godot").is_file():
+            self._error(f"'{chosenFolder}' has no project.godot, so it does not look like a Godot project.")
+            return None
+        self.storedData.setProjectGMCPath(project.projectPath, chosenFolder)
+        return Path(chosenFolder)
 
     # The following catches MPF-Manager errors for the main window
     def _error(self, message: str) -> None:
@@ -570,6 +617,30 @@ class MainWindow(QMainWindow):
         if self.runMPFMonitorCheckBox.isChecked() and "mpf-monitor" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
+        gmcCommand: list[str] | None = None
+        gmcFolderPath: Path | None = None
+        if mpfRunMode in mpfProjects.GMC_MODES:
+            if not mpfProjects.isGMCEligible(environment):
+                self._error(
+                    f"GMC requires MPF 0.80 or newer, '{environment.venvName}' has MPF {environment.installedMPFVersion}."
+                )
+                return
+            godotExecutablePath = self.storedData.settings.godotExecutablePath
+            if not mpfProjects.checkGodotExecutable(godotExecutablePath):
+                self._error("Set the path to your installed Godot in File → Settings before running GMC.")
+                return
+            gmcFolderPath = self._resolveGMCPath(projectToRun)
+            if gmcFolderPath is None:
+                return
+            gmcCommand = mpfProjects.runGMC(
+                godotExecutablePath, gmcFolderPath, self.openGodotEditorCheckBox.isChecked()
+            )
+
+        # GMC only needs godot, MPF is assumed to already be running elsewhere (or not needed for editing)
+        if mpfRunMode == "gmconly" and gmcCommand and gmcFolderPath:
+            self._startProjectProcess(projectToRun, gmcCommand, "gmc", gmcFolderPath)
+            self.refreshMainWindow()
+            return
         if not environment.executable("mpf").exists():
             self._error(f"MPF is not installed in '{environment.venvName}' ({environment.executable('mpf')}).")
             return
@@ -595,11 +666,17 @@ class MainWindow(QMainWindow):
 
         # The following starts the game, and schedules the monitor to start once the game has had time to start up
         gameProcess = self._startProjectProcess(projectToRun, runCommands[0], "game")
+
+        if gmcCommand and gmcFolderPath:
+            QTimer.singleShot(
+                mpfProjects.GMC_START_DELAY_MS,
+                lambda: self._startDelayedCompanion(projectToRun, gmcCommand, "gmc", gameProcess, gmcFolderPath),
+            )
         if len(runCommands) > 1:
             monitorCommand = runCommands[1]
             QTimer.singleShot(
                 mpfProjects.MONITOR_START_DELAY_MS,
-                lambda: self._startDelayedMonitor(projectToRun, monitorCommand, gameProcess),
+                lambda: self._startDelayedCompanion(projectToRun, monitorCommand, "monitor", gameProcess),
             )
 
         self.refreshMainWindow()
@@ -653,7 +730,10 @@ class MainWindow(QMainWindow):
 
         # The following starts one MPF related process for a project and tracks it under a label
 
-    def _startProjectProcess(self, project: Project, command: list[str], label: str) -> RunningProcess:
+    def _startProjectProcess(
+        self, project: Project, command: list[str], label: str, workingPath: Path | None = None
+    ) -> RunningProcess:
+        process = RunningProcess(command, workingPath or Path(project.projectPath), self)
         process = RunningProcess(command, Path(project.projectPath), self)
         process.outputSignal.connect(
             lambda text, name=project.projectName, tag=label: self.outputLogger(f"[{name}/{tag}] {text}")
@@ -667,10 +747,18 @@ class MainWindow(QMainWindow):
 
         # The following starts the monitor only if the same game it was scheduled for is still running
 
-    def _startDelayedMonitor(self, project: Project, monitorCommand: list[str], gameProcess: RunningProcess) -> None:
+    # The following starts a companion process (monitor or gmc) only if the game it was scheduled for is still running
+    def _startDelayedCompanion(
+        self,
+        project: Project,
+        companionCommand: list[str],
+        label: str,
+        gameProcess: RunningProcess,
+        workingPath: Path | None = None,
+    ) -> None:
         projectProcesses = self.runningProcesses.get(project.projectPath, {})
         if projectProcesses.get("game") is not gameProcess:
-            self.outputLogger(f"[{project.projectName}] the game is no longer running, so the monitor was not started")
+            self.outputLogger(f"[{project.projectName}] the game is no longer running, so {label} was not started")
             return
-        self._startProjectProcess(project, monitorCommand, "monitor")
+        self._startProjectProcess(project, companionCommand, label, workingPath)
         self.refreshMainWindow()
