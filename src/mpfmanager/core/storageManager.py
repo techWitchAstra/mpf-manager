@@ -65,6 +65,7 @@ class Project:
     projectName: str
     projectPath: str
     virtualEnvironment: str | None = None
+    gmcFolderPath: str | None = None
 
 
 # The following creates a settings class to store user settings in.
@@ -73,6 +74,7 @@ class Settings:
     venvDirectory: str = ""
     projectDirectory: str = ""
     includePreReleases: bool = False
+    godotExecutablePath: str = ""
 
 
 # The following class is used to process storage operations within MPF Manager
@@ -123,6 +125,7 @@ class StorageProcessor:
                 projectName=str(project["projectName"]),
                 projectPath=str(project["projectPath"]),
                 virtualEnvironment=project.get("virtualEnvironment"),
+                gmcFolderPath=project.get("gmcPath"),
             )
             for project in data.get("projectList") or []
         ]
@@ -209,4 +212,10 @@ class StorageProcessor:
     def setProjectVENV(self, projectPath: str, venvName: str | None) -> None:
         if project := self.getProjectbyPath(projectPath):
             project.virtualEnvironment = venvName
+            self.saveConfiguration()
+
+    # the following sets the GMC path for the project
+    def setProjectGMCPath(self, projectPath: str, gmcFolderPath: str | None) -> None:
+        if project := self.getProjectbyPath(projectPath):
+            project.gmcFolderPath = gmcFolderPath
             self.saveConfiguration()
