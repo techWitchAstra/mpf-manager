@@ -37,6 +37,10 @@ from mpfmanager.core import uvManager as uvCMDs
 from mpfmanager.core.storageManager import Settings, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui.uiWorkers import runInThread
 
+from typing import cast
+
+from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase, QStandardItemModel
+
 # The following delcares packages to be installed
 PACKAGES = ["mpf", *compatibilityManager.MPF_ADD_ONS]
 
