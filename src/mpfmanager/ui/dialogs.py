@@ -554,6 +554,13 @@ class mpfProjectCreationDialog(QDialog):
         projectForm.addRow("Create in:", _browseWidget(self.projectParentFolder, self, "Choose a folder"))
         projectForm.addRow("Environment:", self.environmentPair)
 
+        # The following offers to generate a GMC godot project when the environment can run GMC
+        self.createGMCCheckBox = QCheckBox("Also create a GMC (Godot) project")
+        self.createGMCCheckBox.setToolTip("Requires an environment with MPF 0.80 or newer")
+        self.environmentPair.currentIndexChanged.connect(self._updateGMCOption)
+        projectForm.addRow("", self.createGMCCheckBox)
+        self._updateGMCOption()
+
         # The following creates the dialog buttons
         self.projectDialogbuttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -567,6 +574,13 @@ class mpfProjectCreationDialog(QDialog):
         projectDialoglayout.addWidget(self.operationStatus)
         projectDialoglayout.addWidget(self.projectDialogbuttons)
         self._validateProject()
+
+    # The following only allows a GMC project to be created alongside an environment that can run GMC
+    def _updateGMCOption(self) -> None:
+        gmcAllowed = mpfProjects.isGMCEligible(self.store.getVENVbyName(self.environmentPair.currentData()))
+        self.createGMCCheckBox.setEnabled(gmcAllowed)
+        if not gmcAllowed:
+            self.createGMCCheckBox.setChecked(False)
 
     # The following returns the path of the project
     def projectPath(self) -> Path:
@@ -584,6 +598,102 @@ class mpfProjectCreationDialog(QDialog):
             problem = f"'{self.projectPath()}' already exists."
         self.operationStatus.setText(problem)
         self.projectDialogbuttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problem)
+
+
+# The following class is a dialog box for generating a GMC godot project inside an MPF machine folder
+class GMCProjectDialog(QDialog):
+    """Chooses the GMC version and location for a new GMC godot project"""
+
+    # The following initializes the dialog
+    def __init__(self, project: Project, suggestedVersion: str | None, parentWidget: QWidget | None = None):
+        super().__init__(parentWidget)
+        self.project = project
+        self.suggestedVersion = suggestedVersion
+        self.setWindowTitle("Create GMC (Godot) project")
+        self.setMinimumWidth(480)
+
+        # The following sets up the version, location and import options
+        self.gmcVersion = QComboBox()
+        self.gmcVersion.currentIndexChanged.connect(self._validateGMC)
+        self.gmcLocation = QLineEdit(project.projectPath)
+        self.gmcLocation.textChanged.connect(self._validateGMC)
+        self.runImportCheckBox = QCheckBox("Import assets with Godot after creating (Godot 4.3+)")
+        self.runImportCheckBox.setToolTip("Lets the Godot editor open the new project without errors the first time")
+        self.runImportCheckBox.setChecked(True)
+        self.operationStatus = QLabel("Loading GMC versions…")
+        self.operationStatus.setWordWrap(True)
+
+        # The following creates the form for the dialog
+        gmcForm = QFormLayout()
+        gmcForm.addRow("GMC version:", self.gmcVersion)
+        gmcForm.addRow("Create in:", _browseWidget(self.gmcLocation, self, "Choose the GMC project folder"))
+        gmcForm.addRow("", self.runImportCheckBox)
+
+        # The following creates the dialog buttons
+        self.gmcDialogButtons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.gmcDialogButtons.accepted.connect(self.accept)
+        self.gmcDialogButtons.rejected.connect(self.reject)
+        self.gmcDialogButtons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+
+        # The following lays out the dialog
+        gmcLayout = QVBoxLayout(self)
+        gmcLayout.addLayout(gmcForm)
+        gmcLayout.addWidget(self.operationStatus)
+        gmcLayout.addWidget(self.gmcDialogButtons)
+
+        runInThread(gmcManager.listGMCVersions, self._versionsLoaded, self._versionsFailed)
+
+    # The following fills the version box, picking the version MPF asked for when it's available
+    def _versionsLoaded(self, gmcVersions: list[str]) -> None:
+        if self.suggestedVersion and self.suggestedVersion not in gmcVersions:
+            gmcVersions = [self.suggestedVersion, *gmcVersions]
+        self._fillVersions(gmcVersions)
+        self.operationStatus.setText("")
+        self._validateGMC()
+
+    # The following still lets the user continue with the MPF suggested version if github can't be reached
+    def _versionsFailed(self, errorMessage: str) -> None:
+        self._fillVersions([self.suggestedVersion] if self.suggestedVersion else [])
+        self._validateGMC()
+        self.operationStatus.setText(f"Could not list GMC versions: {errorMessage}")
+
+    # The following adds versions to the version box, labelling the one MPF requires
+    def _fillVersions(self, gmcVersions: list[str]) -> None:
+        self.gmcVersion.blockSignals(True)
+        self.gmcVersion.clear()
+        for gmcVersion in gmcVersions:
+            label = f"{gmcVersion}  (required by MPF)" if gmcVersion == self.suggestedVersion else gmcVersion
+            self.gmcVersion.addItem(label, gmcVersion)
+        self.gmcVersion.setCurrentIndex(max(self.gmcVersion.findData(self.suggestedVersion), 0))
+        self.gmcVersion.blockSignals(False)
+
+    # The following returns the folder the godot project will be created in
+    def gmcProjectPath(self) -> Path:
+        return Path(self.gmcLocation.text().strip()).expanduser()
+
+    # The following validates the dialog, warning when godot won't be able to see the mpf mode folders
+    def _validateGMC(self) -> None:
+        problem = ""
+        if not self.gmcVersion.currentData():
+            problem = "Choose a GMC version."
+        elif not self.gmcLocation.text().strip():
+            problem = "Choose a folder for the GMC project."
+        elif (self.gmcProjectPath() / "project.godot").exists():
+            problem = "That folder already contains a Godot project."
+        elif (self.gmcProjectPath() / gmcManager.GMC_ADDON_RELATIVE).exists():
+            problem = "That folder already contains addons/mpf-gmc."
+
+        if problem:
+            self.operationStatus.setText(problem)
+        elif self.gmcProjectPath().resolve() != Path(self.project.projectPath).resolve():
+            self.operationStatus.setText(
+                "Note: outside of the machine folder GMC won't find slides in modes/<mode>/slides."
+            )
+        else:
+            self.operationStatus.setText("")
+        self.gmcDialogButtons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problem)
 
 
 # The following class sets up the dialog box for settings
