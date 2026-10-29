@@ -8,7 +8,7 @@ import mpfmanager
 from mpfmanager import app
 from mpfmanager.core import compatibilityManager, uvManager
 from mpfmanager.core.compatibilityManager import PyPIRelease
-from mpfmanager.core.storageManager import Settings, StorageProcessor, VirtualEnvironment
+from mpfmanager.core.storageManager import RunProfile, Settings, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui import dialogs
 from mpfmanager.ui.dialogs import SettingsDialog, VENVManagementDialog, environmentPairing
 
@@ -227,9 +227,41 @@ def test_appMainShowsWindowAndExitsWithAppCode(monkeypatch):
         def show(self):
             events.append(("show",))
 
+        def runStartupProfile(self):
+            events.append(("startup",))
+
+    class FakeTimer:
+        @staticmethod
+        def singleShot(_delay, callback):
+            callback()
+
     monkeypatch.setattr(app, "QApplication", FakeApplication)
     monkeypatch.setattr(app, "MainWindow", FakeWindow)
+    monkeypatch.setattr(app, "QTimer", FakeTimer)
     with pytest.raises(SystemExit) as exited:
         app.main()
     assert exited.value.code == 7
     assert ("name", "mpf-Manager") in events and ("show",) in events
+    assert events.index(("show",)) < events.index(("startup",))
+
+
+def test_settingsDialogStartupProfile(qtbot):
+    settings = Settings(runProfileAtStartup=True, startupRunProfile="second")
+    profiles = [RunProfile("first", "/machine"), RunProfile("second", "/machine", "both")]
+    dialog = SettingsDialog(settings, runProfiles=profiles)
+    qtbot.addWidget(dialog)
+    assert dialog.startupProfileCheckBox.isChecked()
+    assert dialog.startupProfileOption.currentData() == "second"
+    dialog.startupProfileOption.setCurrentIndex(0)
+    dialog.applySettings(settings)
+    assert settings.runProfileAtStartup and settings.startupRunProfile == "first"
+    dialog.startupProfileCheckBox.setChecked(False)
+    assert not dialog.startupProfileOption.isEnabled()
+    dialog.applySettings(settings)
+    assert not settings.runProfileAtStartup and settings.startupRunProfile == ""
+
+
+def test_settingsDialogStartupProfileNeedsProfiles(qtbot):
+    dialog = SettingsDialog(Settings(runProfileAtStartup=True, startupRunProfile="gone"))
+    qtbot.addWidget(dialog)
+    assert not dialog.startupProfileCheckBox.isEnabled() and not dialog.startupProfileCheckBox.isChecked()

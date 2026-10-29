@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 from mpfmanager.core import compatibilityManager, gmcManager, sourceManager
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
-from mpfmanager.core.storageManager import Project, Settings, StorageProcessor, VirtualEnvironment
+from mpfmanager.core.storageManager import Project, RunProfile, Settings, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui.uiWorkers import runInThread
 
 # The following delcares packages to be installed
@@ -771,7 +771,12 @@ class GMCProjectDialog(QDialog):
 
 # The following class sets up the dialog box for settings
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, parentWidget: QWidget | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        parentWidget: QWidget | None = None,
+        runProfiles: list[RunProfile] | None = None,
+    ):
         super().__init__(parentWidget)
         self.setWindowTitle("MPF-Manager Settings")
         self.setMinimumWidth(480)
@@ -802,6 +807,23 @@ class SettingsDialog(QDialog):
         # ...existing rows...
         settingsForm.addRow("Godot executable:", godotRow)
 
+        # The following sets up running a saved run profile when mpf-manager starts
+        self.startupProfileCheckBox = QCheckBox("Run a profile when MPF-Manager starts")
+        self.startupProfileOption = QComboBox()
+        for profile in runProfiles or []:
+            self.startupProfileOption.addItem(profile.profileName, profile.profileName)
+        hasProfiles = self.startupProfileOption.count() > 0
+        startupIndex = self.startupProfileOption.findData(settings.startupRunProfile)
+        self.startupProfileOption.setCurrentIndex(max(startupIndex, 0))
+        self.startupProfileCheckBox.setChecked(hasProfiles and settings.runProfileAtStartup and startupIndex >= 0)
+        self.startupProfileCheckBox.setEnabled(hasProfiles)
+        if not hasProfiles:
+            self.startupProfileCheckBox.setToolTip("Save a run profile from the MPF Projects tab first")
+        self.startupProfileCheckBox.toggled.connect(self.startupProfileOption.setEnabled)
+        self.startupProfileOption.setEnabled(self.startupProfileCheckBox.isChecked())
+        settingsForm.addRow("", self.startupProfileCheckBox)
+        settingsForm.addRow("Startup profile:", self.startupProfileOption)
+
         # The following configures the dialog buttons for settings
         settingsDialogbuttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -827,6 +849,9 @@ class SettingsDialog(QDialog):
         settings.projectDirectory = self.projectDirectoryDialog.text().strip()
         settings.includePreReleases = self.preReleasesCheckBox.isChecked()
         settings.godotExecutablePath = self.godotExecutableDialog.text().strip()
+        startupProfileName = self.startupProfileOption.currentData()
+        settings.runProfileAtStartup = self.startupProfileCheckBox.isChecked() and bool(startupProfileName)
+        settings.startupRunProfile = startupProfileName if settings.runProfileAtStartup else ""
 
 
 # The following creates a callable combo box to display the installed environment pairings
