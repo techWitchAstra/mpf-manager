@@ -78,10 +78,13 @@ def setupVENV(filePath: Path, pythonVersion: str) -> list[str]:
 
 
 # The following installs objects in the virtual environment based on
-# a list of required packages and a virtual environment path
-def installVENVPackages(venvPath: Path, requiredPackages: list[str]) -> list[str]:
-    """installVENVPackages installs packages inside of a virtual environment container"""
-    return [locateUV(), "pip", "install", "--python", str(venvPath), *requiredPackages]
+# a list of required packages, optional editable source folders, and a virtual environment path
+def installVENVPackages(
+    venvPath: Path, requiredPackages: list[str], editablePaths: list[Path] | None = None
+) -> list[str]:
+    """installVENVPackages installs packages (and editable source folders) inside of a virtual environment container"""
+    editableArguments = [argument for editablePath in editablePaths or [] for argument in ("-e", str(editablePath))]
+    return [locateUV(), "pip", "install", "--python", str(venvPath), *editableArguments, *requiredPackages]
 
 
 # The following un-installs objects in a virtual environment based
