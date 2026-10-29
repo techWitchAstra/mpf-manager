@@ -16,6 +16,8 @@ import shutil
 from pathlib import Path
 from typing import cast
 
+from packaging.version import Version
+
 # The following imports the used Qt assets for Main Window
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase, QStandardItemModel
@@ -160,13 +162,30 @@ class MainWindow(QMainWindow):
             )
         )
 
+        # The following creates a button that opens the mpf source folder of an editable environment
+        self.openSourceButton = QPushButton("Open MPF Source Folder")
+        self.openSourceButton.setToolTip("Opens the local MPF source folder an editable environment runs from")
+        self.openSourceButton.clicked.connect(
+            lambda: (
+                (selectedEnvironment := self.selectedEnvironment())
+                and selectedEnvironment.isEditable
+                and _openMPFmachineFolder(Path(selectedEnvironment.editableMPFPath))
+            )
+        )
+
         # The following creates a button to delete a selected virtual environment
         self.deleteVENVButton = QPushButton("Delete…")
         self.deleteVENVButton.clicked.connect(self.deleteVENV)
 
         # The following creates a box to hold the buttons related to virtualEnvironments
         venvButtons = QHBoxLayout()
-        for currentButton in (self.newVENVButton, self.changeVENVButton, self.verifyVENVButton, self.openVENVButton):
+        for currentButton in (
+            self.newVENVButton,
+            self.changeVENVButton,
+            self.verifyVENVButton,
+            self.openVENVButton,
+            self.openSourceButton,
+        ):
             venvButtons.addWidget(currentButton)
         venvButtons.addStretch()
         venvButtons.addWidget(self.deleteVENVButton)
@@ -318,7 +337,10 @@ class MainWindow(QMainWindow):
             row = self.venvAvailableTable.rowCount()
             self.venvAvailableTable.insertRow(row)
             self.venvAvailableTable.setItem(row, 0, _item(environment.venvName, environment.venvName))
-            self.venvAvailableTable.setItem(row, 1, _item(environment.installedMPFVersion))
+            mpfVersionItem = _item(environment.installedMPFVersion + ("  (editable)" if environment.isEditable else ""))
+            if environment.isEditable:
+                mpfVersionItem.setToolTip(f"Installed in editable mode from {environment.editableMPFPath}")
+            self.venvAvailableTable.setItem(row, 1, mpfVersionItem)
             self.venvAvailableTable.setItem(row, 2, _item(environment.installedPython))
             self.venvAvailableTable.setItem(row, 3, _item(", ".join(environment.additionalPackages)))
             self.venvAvailableTable.setItem(row, 4, _item("OK" if environment.exists else "Missing"))
@@ -366,6 +388,7 @@ class MainWindow(QMainWindow):
             b.setEnabled(idle and environment is not None and environment.exists)
         self.deleteVENVButton.setEnabled(idle and environment is not None)
         self.openVENVButton.setEnabled(environment is not None and environment.exists)
+        self.openSourceButton.setEnabled(environment is not None and environment.isEditable)
 
         projectTableItem = self.selectedProject()
         running = projectTableItem is not None and projectTableItem.projectPath in self.runningProcesses
@@ -479,10 +502,18 @@ class MainWindow(QMainWindow):
                 commandList.append(uvCMDs.setupVENV(plannedVENV.venvPath, plannedVENV.pythonVersion))
             if plannedVENV.packagesToRemove:
                 commandList.append(uvCMDs.uninstallVENVPackages(plannedVENV.venvPath, plannedVENV.packagesToRemove))
-            commandList.append(uvCMDs.installVENVPackages(plannedVENV.venvPath, plannedVENV.mpfVersionRequirements))
+            commandList.append(
+                uvCMDs.installVENVPackages(
+                    plannedVENV.venvPath,
+                    plannedVENV.mpfVersionRequirements,
+                    [plannedVENV.editableMPFPath] if plannedVENV.editableMPFPath else None,
+                )
+            )
         except uvCMDs.UvNotFoundError as exc:
             self._error(str(exc))
             return
+
+        editablePath = str(plannedVENV.editableMPFPath or "")
 
         # Function to be called when virtual environment creation is attempted
         def done(ok: bool) -> None:
@@ -500,6 +531,7 @@ class MainWindow(QMainWindow):
                         plannedVENV.pythonVersion,
                         plannedVENV.mpfVersion,
                         plannedVENV.companionPackages,
+                        editablePath,
                     )
                 )
             else:
@@ -511,8 +543,10 @@ class MainWindow(QMainWindow):
                     plannedVENV.mpfVersion,
                     plannedVENV.companionPackages,
                 )
+                environment.editableMPFPath = editablePath
                 self.storedData.saveConfiguration()
-            self.outputLogger(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}.")
+            sourceText = f" (editable from {editablePath})" if editablePath else ""
+            self.outputLogger(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}{sourceText}.")
             self.refreshMainWindow()
 
         self.commandQueue.run(commandList, done)
@@ -530,6 +564,26 @@ class MainWindow(QMainWindow):
             if not version:
                 self.outputLogger(f"mpf is not installed in '{environment.venvName}'.")
                 return
+
+            # An editable install's version comes from its source folder, which may have changed since installing
+            if environment.isEditable:
+                try:
+                    localSource = sourceManager.readLocalMPFSource(Path(environment.editableMPFPath))
+                except (OSError, ValueError) as sourceException:
+                    self.outputLogger(f"Could not read the MPF source folder: {sourceException}")
+                else:
+                    version = localSource.mpfVersion
+                    if not compatibilityManager.pythonSetCheck(
+                        localSource.requiredPythonVersion, environment.installedPython
+                    ):
+                        self.outputLogger(
+                            f"Warning: the MPF source now needs Python {localSource.requiredPythonVersion}, "
+                            f"'{environment.venvName}' has Python {environment.installedPython}."
+                        )
+                    self.outputLogger(
+                        "Code changes in the source folder are picked up automatically; if its dependencies "
+                        "changed, re-apply it with 'Change MPF version…'."
+                    )
             environment.installedMPFVersion = version
             environment.additionalPackages = [
                 package for package in environment.additionalPackages if package in packages
@@ -560,6 +614,8 @@ class MainWindow(QMainWindow):
         # The following warns about deletion and which projects currently run using that Environment
         if projectsUsingVENV:
             warningText += "\n\nUsed by: " + ", ".join(projectsUsingVENV)
+        if environmentToDelete.isEditable:
+            warningText += f"\n\nThe MPF source folder will be kept:\n{environmentToDelete.editableMPFPath}"
         if QMessageBox.question(self, "Delete environment", warningText) != QMessageBox.StandardButton.Yes:
             return
         if environmentToDelete.exists:
@@ -841,7 +897,6 @@ class MainWindow(QMainWindow):
         self, project: Project, command: list[str], label: str, workingPath: Path | None = None
     ) -> RunningProcess:
         process = RunningProcess(command, workingPath or Path(project.projectPath), self)
-        process = RunningProcess(command, Path(project.projectPath), self)
         process.outputSignal.connect(
             lambda text, name=project.projectName, tag=label: self.outputLogger(f"[{name}/{tag}] {text}")
         )
