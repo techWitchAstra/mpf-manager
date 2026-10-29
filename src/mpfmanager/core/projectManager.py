@@ -27,7 +27,6 @@ CONFIG_VERSION = 6
 _CONFIG_VERSION_RE = re.compile(r"^#config_version=(\d+)")
 
 MONITOR_START_DELAY_MS = 2000
-MONITOR_COMPATIBLE_MODES = ("game", "both")
 
 GMC_MIN_MPF_VERSION = Version("0.80.0.dev0")
 GMC_START_DELAY_MS = 2000

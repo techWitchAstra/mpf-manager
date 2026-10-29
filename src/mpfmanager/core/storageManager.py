@@ -40,6 +40,7 @@ class VirtualEnvironment:
     installedPython: str
     installedMPFVersion: str
     additionalPackages: list[str] = field(default_factory=list)
+    editableMPFPath: str = ""
 
     # The following property returns the path to its respective virtual environment
     @property
@@ -52,6 +53,11 @@ class VirtualEnvironment:
         if os.name == "nt":
             return self.venvPath / "Scripts" / f"{venvName}.exe"
         return self.venvPath / "bin" / venvName
+
+    # The following property returns if mpf is installed from a local source folder (editable mode)
+    @property
+    def isEditable(self) -> bool:
+        return bool(self.editableMPFPath)
 
     # The following property returns if a virtual environment exists or not
     @property
@@ -93,6 +99,11 @@ class StorageProcessor:
         self.projectList: list[Project] = []
         self.loadConfiguration()
 
+    # The following property returns where downloaded copies of mpf-gmc are cached
+    @property
+    def gmcCachePath(self) -> Path:
+        return self.homePath / "gmc-cache"
+
     # The following loads up the configuration data for mpf-manager using yamlInterfacer
     def loadConfiguration(self) -> None:
         """loads the list of virtual environments, project, and settings from the config.yaml file"""
@@ -115,6 +126,7 @@ class StorageProcessor:
                 installedPython=str(environment.get("installedPython", "")),
                 installedMPFVersion=str(environment.get("installedMPFVersion", "")),
                 additionalPackages=[str(x) for x in environment.get("additionalPackages") or []],
+                editableMPFPath=str(environment.get("editableMPFPath") or ""),
             )
             for environment in data.get("environmentList") or []
         ]
@@ -125,7 +137,7 @@ class StorageProcessor:
                 projectName=str(project["projectName"]),
                 projectPath=str(project["projectPath"]),
                 virtualEnvironment=project.get("virtualEnvironment"),
-                gmcFolderPath=project.get("gmcPath"),
+                gmcFolderPath=project.get("gmcFolderPath") or project.get("gmcPath"),
             )
             for project in data.get("projectList") or []
         ]
