@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -31,11 +32,11 @@ from PySide6.QtWidgets import (
 )
 
 # The following imnports the needed mpf-manager related functions and classes
-from mpfmanager.core import compatibilityManager
+from mpfmanager.core import compatibilityManager, gmcManager, sourceManager
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
-from mpfmanager.core.storageManager import Settings, StorageProcessor, VirtualEnvironment
-from mpfmanager.ui.uiWorkers import runInThread
+from mpfmanager.core.storageManager import Project, Settings, StorageProcessor, VirtualEnvironment
+from mpfmanager.ui.uiWorkers import CommandQueue, runInThread
 
 # The following delcares packages to be installed
 PACKAGES = ["mpf", *compatibilityManager.MPF_ADD_ONS]
@@ -53,6 +54,7 @@ class venvDialogData:
     mpfVersionRequirements: list[str]
     companionPackages: list[str]
     packagesToRemove: list[str]
+    editableMPFPath: Path | None = None
 
 
 # The following creates a browse button and selection widget
@@ -108,6 +110,9 @@ class VENVManagementDialog(QDialog):
         self.availableReleases: dict[str, list[compatibilityManager.PyPIRelease]] = {}
         self.installedVENVPackages: set[str] = set()
         self._nameWasEdited = False
+        self.localSource: sourceManager.LocalMPFSource | None = None
+        self._sourceProblem: str | None = None
+        self._cloning = False
 
         # The following sets up the window for the widget
         self.setWindowTitle("Change MPF version" if venvObject else "New MPF environment")
@@ -118,6 +123,26 @@ class VENVManagementDialog(QDialog):
         self.venvDialogName.setEnabled(venvObject is None)
         self.venvDialogName.textEdited.connect(lambda: setattr(self, "_nameWasEdited", True))
         self.venvDialogName.textChanged.connect(self._updateVENVLocation)
+
+        # The following lets the user choose between a PyPI release of mpf or a local editable source folder
+        self.sourceChoice = QComboBox()
+        self.sourceChoice.addItem("PyPI release", "pypi")
+        self.sourceChoice.addItem("Local MPF source (editable)", "editable")
+        self.sourceChoice.setToolTip("Editable installs run MPF straight from a source folder, e.g. a git checkout")
+
+        # The following sets up the editable source folder picker, with an option to clone mpf from github
+        self.editableSourceEdit = QLineEdit(venvObject.editableMPFPath if venvObject else "")
+        self.editableSourceEdit.setPlaceholderText("Folder containing an MPF checkout (has mpf/_version.py)")
+        self.editableSourceEdit.textChanged.connect(self._readEditableSource)
+        self.cloneSourceButton = QPushButton("Clone from GitHub…")
+        self.cloneSourceButton.clicked.connect(self._cloneEditableSource)
+        self.cloneQueue = CommandQueue(self)
+        self.cloneQueue.outputSignal.connect(self._cloneOutput)
+        self.editableSourceRow = QWidget()
+        editableSourceLayout = QHBoxLayout(self.editableSourceRow)
+        editableSourceLayout.setContentsMargins(0, 0, 0, 0)
+        editableSourceLayout.addWidget(_browseWidget(self.editableSourceEdit, self, "MPF source folder"), 1)
+        editableSourceLayout.addWidget(self.cloneSourceButton)
 
         # The following sets up a mpf combination box
         self.dialogMPFVersion = QComboBox()
@@ -149,8 +174,10 @@ class VENVManagementDialog(QDialog):
         self.operationStatus.setWordWrap(True)
 
         # The following creates a dialog form to submit as part of dialog box
-        dialogForm = QFormLayout()
+        self.dialogForm = dialogForm = QFormLayout()
         dialogForm.addRow("Name:", self.venvDialogName)
+        dialogForm.addRow("Source:", self.sourceChoice)
+        dialogForm.addRow("MPF source:", self.editableSourceRow)
         dialogForm.addRow("MPF version:", self.dialogMPFVersion)
         dialogForm.addRow("", self.preReleaseCheckbox)
 
@@ -188,6 +215,11 @@ class VENVManagementDialog(QDialog):
         dialogWidgetLayout.addWidget(self.operationStatus)
         dialogWidgetLayout.addWidget(self.dialogButtons)
 
+        # The following starts on the source the environment already uses
+        self.sourceChoice.setCurrentIndex(1 if venvObject is not None and venvObject.isEditable else 0)
+        self.sourceChoice.currentIndexChanged.connect(self._sourceWasChanged)
+        self._sourceWasChanged()
+
         self._updateVENVLocation()
         runInThread(self._loadVENV, self._venvLoaded, self._venvLoadFailed)
 
@@ -214,11 +246,97 @@ class VENVManagementDialog(QDialog):
     def _venvLoadFailed(self, errorMessage: str) -> None:
         self.operationStatus.setText(f"Could not load releases from PyPI: {errorMessage}")
 
+    # Editable source handling
+
+    # The following returns true when mpf will be installed from a local source folder
+    def _isEditable(self) -> bool:
+        return self.sourceChoice.currentData() == "editable"
+
+    # The following shows the source folder row and swaps the version list when the source changes
+    def _sourceWasChanged(self) -> None:
+        editable = self._isEditable()
+        self.dialogForm.setRowVisible(self.editableSourceRow, editable)
+        self.dialogForm.setRowVisible(self.preReleaseCheckbox, not editable)
+        self.dialogMPFVersion.setEnabled(not editable)
+        self._readEditableSource()
+
+    # The following reads the chosen source folder so its version can be used
+    def _readEditableSource(self) -> None:
+        sourceText = self.editableSourceEdit.text().strip()
+        self.localSource = None
+        self._sourceProblem = "Choose an MPF source folder, or clone one from GitHub." if not sourceText else None
+        if sourceText:
+            try:
+                self.localSource = sourceManager.readLocalMPFSource(Path(sourceText).expanduser())
+            except (OSError, ValueError) as sourceException:
+                self._sourceProblem = str(sourceException)
+        self._populateMPFVersions()
+
+    # The following shows the local source's version as the only mpf choice
+    def _populateEditableVersion(self) -> None:
+        # Add-on choices need the PyPI releases, so nothing is filled in until they have loaded
+        if not self.availableReleases:
+            self._validateVENV()
+            return
+        self.dialogMPFVersion.blockSignals(True)
+        self.dialogMPFVersion.clear()
+        if self.localSource:
+            self.dialogMPFVersion.addItem(f"{self.localSource.mpfVersion}  (editable)", self.localSource.mpfVersion)
+            self.dialogMPFVersion.setCurrentIndex(0)
+        self.dialogMPFVersion.blockSignals(False)
+        self._mpfVersionWasChanged()
+
+    # The following clones mpf's source from github into a chosen folder, then uses it as the source
+    def _cloneEditableSource(self) -> None:
+        branchName, chosen = QInputDialog.getItem(
+            self, "Clone MPF", "Branch to clone:", sourceManager.MPF_SOURCE_BRANCHES, 0, False
+        )
+        if not chosen:
+            return
+        parentFolder = QFileDialog.getExistingDirectory(
+            self, "Choose where to clone MPF", self.storageObject.settings.projectDirectory
+        )
+        if not parentFolder:
+            return
+        destination = Path(parentFolder) / f"mpf-{branchName}"
+        if destination.exists():
+            QMessageBox.warning(self, "Clone MPF", f"'{destination}' already exists, choose it as the source instead.")
+            return
+        try:
+            cloneCommand = sourceManager.cloneMPFSource(destination, branchName)
+        except FileNotFoundError as gitException:
+            QMessageBox.warning(self, "Clone MPF", str(gitException))
+            return
+
+        # The following finishes up the clone, using the new folder as the source if it worked
+        def cloned(ok: bool) -> None:
+            self._cloning = False
+            self.cloneSourceButton.setEnabled(True)
+            if ok:
+                self.editableSourceEdit.setText(str(destination))
+            else:
+                self._validateVENV()
+                self.operationStatus.setText(f"Cloning MPF ({branchName}) failed.")
+
+        self._cloning = True
+        self.cloneSourceButton.setEnabled(False)
+        self._validateVENV()
+        self.cloneQueue.run([cloneCommand], cloned)
+
+    # The following shows the latest line of git's output while cloning
+    def _cloneOutput(self, outputText: str) -> None:
+        lastLine = outputText.replace("\r", "\n").strip().splitlines()[-1:]
+        if lastLine:
+            self.operationStatus.setText(lastLine[0])
+
     # Updaters
 
     # The following function is called to force the MPF versions to re-populate depending
     # on pre-release status updates, and venv updates
     def _populateMPFVersions(self) -> None:
+        if self._isEditable():
+            self._populateEditableVersion()
+            return
         compatibleReleases = compatibilityManager.filterPyPIReleases(
             self.availableReleases.get("mpf", []), self.preReleaseCheckbox.isChecked()
         )
@@ -249,6 +367,10 @@ class VENVManagementDialog(QDialog):
 
     # The following outputs the next release given a selected mpf version
     def _selectedRelease(self) -> compatibilityManager.PyPIRelease | None:
+        if self._isEditable():
+            if self.localSource is None:
+                return None
+            return compatibilityManager.PyPIRelease(self.localSource.mpfVersion, self.localSource.requiredPythonVersion)
         selectedVersion = self.dialogMPFVersion.currentData()
         return next(
             (release for release in self.availableReleases.get("mpf", []) if release.pypiVersion == selectedVersion),
@@ -316,7 +438,8 @@ class VENVManagementDialog(QDialog):
             return
         version, python = self.dialogMPFVersion.currentData(), self.pythonVersionDialog.currentData()
         if version and python:
-            self.venvDialogName.setText(f"mpf-{version}-py{python}")
+            sourceTag = "-editable" if self._isEditable() else ""
+            self.venvDialogName.setText(f"mpf-{version}{sourceTag}-py{python}")
 
     # The following updates the location text for a virtual environment
     def _updateVENVLocation(self) -> None:
@@ -339,6 +462,22 @@ class VENVManagementDialog(QDialog):
         name = self.venvDialogName.text().strip()
         if not self.availableReleases:
             problem = ""  # still loading or failed; status label explains
+        elif self._cloning:
+            problem = ""  # the clone's progress is shown in the status label
+        elif self._isEditable() and self._sourceProblem:
+            problem = self._sourceProblem
+        elif (
+            self._isEditable()
+            and self.venvObject
+            and self.localSource
+            and not compatibilityManager.pythonSetCheck(
+                self.localSource.requiredPythonVersion, self.venvObject.installedPython
+            )
+        ):
+            problem = (
+                f"This MPF source needs Python {self.localSource.requiredPythonVersion}, "
+                f"the environment has Python {self.venvObject.installedPython}."
+            )
         elif not self.dialogMPFVersion.currentData():
             problem = "No MPF versions available."
         elif not self.pythonVersionDialog.currentData():
@@ -356,7 +495,9 @@ class VENVManagementDialog(QDialog):
                 problem = f"An environment named '{name}' already exists."
             elif self._venvPath().exists():
                 problem = f"'{self._venvPath()}' already exists."
-        if problem is not None and self.availableReleases:
+        if self._cloning:
+            pass
+        elif problem is not None and self.availableReleases:
             self.operationStatus.setText(problem)
         elif self.availableReleases:
             self.operationStatus.setText("")
@@ -365,7 +506,10 @@ class VENVManagementDialog(QDialog):
     # The following creates a skeleton virtual environment
     def plan(self) -> venvDialogData:
         mpfVersion = self.dialogMPFVersion.currentData()
-        mpfVersionRequirements = [f"mpf=={mpfVersion}"]
+
+        # An editable install gets mpf from the source folder instead of a pinned release
+        editablePath = self.localSource.sourcePath if self._isEditable() and self.localSource else None
+        mpfVersionRequirements = [] if editablePath else [f"mpf=={mpfVersion}"]
         companionPackages, packagesToRemove = [], []
         for package, box in self.mpfAddOnDialogs.items():
             match = self._compatibleAddOnRelease(package) if box.isChecked() else None
@@ -382,6 +526,7 @@ class VENVManagementDialog(QDialog):
             mpfVersionRequirements=mpfVersionRequirements,
             companionPackages=companionPackages,
             packagesToRemove=packagesToRemove,
+            editableMPFPath=editablePath,
         )
 
 
