@@ -1,7 +1,7 @@
 import pytest
 
 from mpfmanager.core import storageManager, yamlInterfacer
-from mpfmanager.core.storageManager import Project, StorageProcessor, VirtualEnvironment
+from mpfmanager.core.storageManager import Project, RunProfile, StorageProcessor, VirtualEnvironment
 
 
 @pytest.fixture(autouse=True)
@@ -118,3 +118,63 @@ def test_virtualEnvironmentPaths(tmp_path):
         assert environment.executable("mpf") == tmp_path / "env" / "Scripts" / "mpf.exe"
     else:
         assert environment.executable("mpf") == tmp_path / "env" / "bin" / "mpf"
+
+
+def test_runProfilesSurviveSaveAndLoad(tmp_path):
+    store = StorageProcessor()
+    store.addProject(Project("machine", str(tmp_path / "machine")))
+    store.saveRunProfile(RunProfile("attract", str(tmp_path / "machine"), "gmc", ["-x"], False, True, True, "-v"))
+    store.setStartupRunProfile("attract")
+    reloaded = StorageProcessor()
+    assert reloaded.runProfileList == [
+        RunProfile("attract", str(tmp_path / "machine"), "gmc", ["-x"], False, True, True, "-v")
+    ]
+    assert reloaded.startupProfile() == reloaded.getRunProfileByName("attract")
+
+
+def test_saveRunProfileReplacesAndValidates(tmp_path):
+    store = StorageProcessor()
+    store.addProject(Project("machine", str(tmp_path / "machine")))
+    store.saveRunProfile(RunProfile("p", str(tmp_path / "machine"), "game"))
+    store.saveRunProfile(RunProfile("p", str(tmp_path / "machine"), "monitor"))
+    assert [profile.runMode for profile in store.runProfileList] == ["monitor"]
+    with pytest.raises(ValueError):
+        store.saveRunProfile(RunProfile("  ", str(tmp_path / "machine")))
+    with pytest.raises(ValueError):
+        store.saveRunProfile(RunProfile("q", str(tmp_path / "unknown")))
+    with pytest.raises(ValueError):
+        store.setStartupRunProfile("missing")
+
+
+def test_startupProfileCanBeDisabled(tmp_path):
+    store = StorageProcessor()
+    store.addProject(Project("machine", str(tmp_path / "machine")))
+    store.saveRunProfile(RunProfile("p", str(tmp_path / "machine")))
+    assert store.startupProfile() is None
+    store.setStartupRunProfile("p")
+    assert store.startupProfile() is not None
+    store.setStartupRunProfile(None)
+    reloaded = StorageProcessor()
+    assert reloaded.startupProfile() is None and not reloaded.settings.runProfileAtStartup
+
+
+def test_removingProfileOrProjectClearsStartup(tmp_path):
+    store = StorageProcessor()
+    store.addProject(Project("machine", str(tmp_path / "machine")))
+    store.addProject(Project("other", str(tmp_path / "other")))
+    store.saveRunProfile(RunProfile("p", str(tmp_path / "machine")))
+    store.saveRunProfile(RunProfile("o", str(tmp_path / "other")))
+    store.setStartupRunProfile("p")
+    store.removeRunProfile("p")
+    assert store.startupProfile() is None and store.settings.startupRunProfile == ""
+    store.setStartupRunProfile("o")
+    store.removeProject(str(tmp_path / "other"))
+    reloaded = StorageProcessor()
+    assert reloaded.runProfileList == [] and not reloaded.settings.runProfileAtStartup
+
+
+def test_runProfileDefaultsLoadFromSparseConfig(tmp_path):
+    store = StorageProcessor()
+    yamlInterfacer.writeYAML({"runProfileList": [{"profileName": "p", "projectPath": "/machine"}]}, store.savePath)
+    profile = StorageProcessor().getRunProfileByName("p")
+    assert profile == RunProfile("p", "/machine", "game", [], False, False, False, "")

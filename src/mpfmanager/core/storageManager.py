@@ -75,6 +75,19 @@ class Project:
     gmcFolderPath: str | None = None
 
 
+# The following creates a class to store a saved way of running a project, so it can be run again in one step
+@dataclass
+class RunProfile:
+    profileName: str
+    projectPath: str
+    runMode: str = "game"
+    hardwareArguments: list[str] = field(default_factory=lambda: ["-X"])
+    noMediaController: bool = False
+    runMonitor: bool = False
+    openGodotEditor: bool = False
+    extraArguments: str = ""
+
+
 # The following creates a settings class to store user settings in.
 @dataclass
 class Settings:
@@ -82,6 +95,8 @@ class Settings:
     projectDirectory: str = ""
     includePreReleases: bool = False
     godotExecutablePath: str = ""
+    runProfileAtStartup: bool = False
+    startupRunProfile: str = ""
 
 
 # The following class is used to process storage operations within MPF Manager
@@ -98,6 +113,7 @@ class StorageProcessor:
         )
         self.environmentList: list[VirtualEnvironment] = []
         self.projectList: list[Project] = []
+        self.runProfileList: list[RunProfile] = []
         self.loadConfiguration()
 
     # The following property returns where downloaded copies of mpf-gmc are cached
@@ -144,6 +160,21 @@ class StorageProcessor:
             for project in data.get("projectList") or []
         ]
 
+        # The following loads the saved run profiles from the config.yaml to an object
+        self.runProfileList = [
+            RunProfile(
+                profileName=str(profile["profileName"]),
+                projectPath=str(profile["projectPath"]),
+                runMode=str(profile.get("runMode") or "game"),
+                hardwareArguments=[str(x) for x in profile.get("hardwareArguments") or []],
+                noMediaController=bool(profile.get("noMediaController", False)),
+                runMonitor=bool(profile.get("runMonitor", False)),
+                openGodotEditor=bool(profile.get("openGodotEditor", False)),
+                extraArguments=str(profile.get("extraArguments") or ""),
+            )
+            for profile in data.get("runProfileList") or []
+        ]
+
     # The following saves the configuration data for mpf-manager using yamlInterfacer
     def saveConfiguration(self) -> None:
         """saves the list of virtual environments, project, and settings from the config.yaml file"""
@@ -152,6 +183,7 @@ class StorageProcessor:
             "settings": asdict(self.settings),
             "environmentList": [asdict(environment) for environment in self.environmentList],
             "projectList": [asdict(project) for project in self.projectList],
+            "runProfileList": [asdict(profile) for profile in self.runProfileList],
         }
         yamlInterfacer.writeYAML(data, self.savePath, headerString="# MPF-Manager configuration")
 
@@ -220,6 +252,11 @@ class StorageProcessor:
         self.projectList = [
             project for project in self.projectList if str(Path(project.projectPath).resolve()) != resolvedPath
         ]
+
+        # The following removes the run profiles for the removed project, as they have nothing left to run
+        for profile in list(self.runProfileList):
+            if str(Path(profile.projectPath).resolve()) == resolvedPath:
+                self._dropRunProfile(profile.profileName)
         self.saveConfiguration()
 
     # The following sets a virtual environment for a project
@@ -233,3 +270,52 @@ class StorageProcessor:
         if project := self.getProjectbyPath(projectPath):
             project.gmcFolderPath = gmcFolderPath
             self.saveConfiguration()
+
+    # Run Profile Specific Functions
+
+    # The following finds a run profile given a name
+    def getRunProfileByName(self, profileName: str | None) -> RunProfile | None:
+        """gives the run profile data class for a given run profile name"""
+        return next((profile for profile in self.runProfileList if profile.profileName == profileName), None)
+
+    # The following saves a run profile, replacing any saved profile with the same name
+    def saveRunProfile(self, profileToSave: RunProfile) -> None:
+        """adds a run profile, or replaces the run profile with the same name"""
+        if not profileToSave.profileName.strip():
+            raise ValueError("A run profile needs a name")
+        if not self.getProjectbyPath(profileToSave.projectPath):
+            raise ValueError(f"No project is registered at '{profileToSave.projectPath}'")
+        self.runProfileList = [
+            profile for profile in self.runProfileList if profile.profileName != profileToSave.profileName
+        ]
+        self.runProfileList.append(profileToSave)
+        self.saveConfiguration()
+
+    # The following removes a run profile given its name
+    def removeRunProfile(self, profileName: str) -> None:
+        """removes a run profile, turning off running it at startup if it was the startup profile"""
+        self._dropRunProfile(profileName)
+        self.saveConfiguration()
+
+    # The following removes a run profile without saving, and stops it being run at startup
+    def _dropRunProfile(self, profileName: str) -> None:
+        self.runProfileList = [profile for profile in self.runProfileList if profile.profileName != profileName]
+        if self.settings.startupRunProfile == profileName:
+            self.settings.startupRunProfile = ""
+            self.settings.runProfileAtStartup = False
+
+    # The following sets which run profile, if any, is run when mpf-manager starts
+    def setStartupRunProfile(self, profileName: str | None) -> None:
+        """enables running the given profile at startup, or disables it when given None"""
+        if profileName is not None and not self.getRunProfileByName(profileName):
+            raise ValueError(f"There is no run profile named '{profileName}'")
+        self.settings.runProfileAtStartup = profileName is not None
+        self.settings.startupRunProfile = profileName or ""
+        self.saveConfiguration()
+
+    # The following returns the run profile to run at startup, if running one at startup is enabled
+    def startupProfile(self) -> RunProfile | None:
+        """gives the run profile to run when mpf-manager starts, or None if disabled"""
+        if not self.settings.runProfileAtStartup:
+            return None
+        return self.getRunProfileByName(self.settings.startupRunProfile)
