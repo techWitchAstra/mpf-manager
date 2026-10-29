@@ -41,10 +41,12 @@ from PySide6.QtWidgets import (
 )
 
 # The following imports the needed parts of the application from other files
+from mpfmanager.core import compatibilityManager, gmcManager, sourceManager
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
 from mpfmanager.core.storageManager import Project, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui.dialogs import (
+    GMCProjectDialog,
     SettingsDialog,
     VENVManagementDialog,
     environmentPairing,
@@ -198,13 +200,23 @@ class MainWindow(QMainWindow):
             lambda: (p := self.selectedProject()) and _openMPFmachineFolder(Path(p.projectPath))
         )
 
+        # The following adds a button to generate a GMC godot project for the selected project
+        self.createGMCButton = QPushButton("Create GMC project…")
+        self.createGMCButton.setToolTip("Generate a blank Godot project with mpf-gmc configured in the machine folder")
+        self.createGMCButton.clicked.connect(lambda: self.createGMCProject())
+
         # The following adds a button to remove a mpf project from the list
         self.removeProjectButton = QPushButton("Remove from list")
         self.removeProjectButton.clicked.connect(self.removeProject)
 
         # The following sets up a layout for the project management buttons
         projectManagementButtonBar = QHBoxLayout()
-        for currentButton in (self.newprojectButton, self.addProjectButton, self.openProjectFolderButton):
+        for currentButton in (
+            self.newprojectButton,
+            self.addProjectButton,
+            self.openProjectFolderButton,
+            self.createGMCButton,
+        ):
             projectManagementButtonBar.addWidget(currentButton)
         projectManagementButtonBar.addStretch()
         projectManagementButtonBar.addWidget(self.removeProjectButton)
@@ -361,10 +373,25 @@ class MainWindow(QMainWindow):
         self.removeProjectButton.setEnabled(projectTableItem is not None and not running)
         self.runMPFButton.setEnabled(projectTableItem is not None and not running)
         self.stopMPFButton.setEnabled(running)
+        projectEnvironment = (
+            self.storedData.getVENVbyName(projectTableItem.virtualEnvironment) if projectTableItem else None
+        )
+        self.createGMCButton.setEnabled(idle and mpfProjects.isGMCEligible(projectEnvironment))
 
     # The following sets the project environment
     def _setProjectEnvironment(self, path: str, env_name: str | None) -> None:
         self.storedData.setProjectVENV(path, env_name)
+
+        # The following keeps the GMC project's gmc.cfg pointed at the newly chosen environment's mpf
+        project = self.storedData.getProjectbyPath(path)
+        gmcFolder = (project.gmcFolderPath or mpfProjects.findGodotProject(Path(path))) if project else None
+        if gmcFolder:
+            environment = self.storedData.getVENVbyName(env_name)
+            try:
+                gmcManager.updateGMCExecutable(Path(gmcFolder), environment.executable("mpf") if environment else None)
+            except OSError as exc:
+                self.outputLogger(f"Could not update gmc.cfg: {exc}")
+        self._updateButtons()
 
         # The following enables only the run options that the selected project's environment supports
 
@@ -565,6 +592,82 @@ class MainWindow(QMainWindow):
         self.outputLogger(f"Created MPF project at {newProjectPath}")
         self.tabs.setCurrentIndex(1)
         self.refreshMainWindow()
+        if newProjectDialog.createGMCCheckBox.isChecked() and (
+            newProject := self.storedData.getProjectbyPath(str(newProjectPath))
+        ):
+            self.createGMCProject(newProject)
+
+    # The following generates a GMC godot project for a project (the selected one by default)
+    def createGMCProject(self, project: Project | None = None) -> None:
+        project = project or self.selectedProject()
+        environment = self.storedData.getVENVbyName(project.virtualEnvironment) if project else None
+        if not project or not environment:
+            return
+        if not mpfProjects.isGMCEligible(environment):
+            self._error(
+                f"GMC requires MPF 0.80 or newer, '{environment.venvName}' has MPF {environment.installedMPFVersion}."
+            )
+            return
+        if existingGodotProject := mpfProjects.findGodotProject(Path(project.projectPath)):
+            self._error(f"This machine folder already has a Godot project at {existingGodotProject}.")
+            return
+
+        # The following shows the dialog once MPF has said which GMC version it wants
+        def versionKnown(suggestedVersion: str | None) -> None:
+            dialog = GMCProjectDialog(project, suggestedVersion, self)
+            if not dialog.exec():
+                return
+            gmcVersion: str | None = dialog.gmcVersion.currentData()
+            if not gmcVersion:
+                return
+            gmcPath = dialog.gmcProjectPath()
+            runImport = dialog.runImportCheckBox.isChecked()
+            godotExecutable = self.storedData.settings.godotExecutablePath
+            cachePath = self.storedData.gmcCachePath
+            self.outputLogger(f"Fetching mpf-gmc {gmcVersion}…")
+
+            # The following downloads the addon and writes the project off of the GUI thread
+            def build() -> tuple[Path, Version | None]:
+                addonSource = gmcManager.fetchGMCAddon(gmcVersion, cachePath)
+                detectedGodot = (
+                    gmcManager.godotVersion(godotExecutable)
+                    if mpfProjects.checkGodotExecutable(godotExecutable)
+                    else None
+                )
+                godotFeature = (
+                    f"{detectedGodot.major}.{detectedGodot.minor}"
+                    if detectedGodot
+                    else gmcManager.GODOT_DEFAULT_FEATURE
+                )
+                gmcManager.createGMCProject(
+                    gmcPath, project.projectName, addonSource, godotFeature, environment.executable("mpf")
+                )
+                return gmcPath, detectedGodot
+
+            # The following records the new GMC project and optionally imports it with godot
+            def built(result: tuple[Path, Version | None]) -> None:
+                createdPath, detectedGodot = result
+                self.storedData.setProjectGMCPath(project.projectPath, str(createdPath))
+                self.outputLogger(f"Created GMC {gmcVersion} project at {createdPath}")
+                self.refreshMainWindow()
+                if not runImport:
+                    return
+                if detectedGodot is None or detectedGodot < gmcManager.GODOT_IMPORT_MIN_VERSION:
+                    self.outputLogger(
+                        "Skipped the asset import: set Godot 4.3 or newer in File → Settings, "
+                        "or open the project once in the Godot editor."
+                    )
+                elif self.commandQueue.isBusy:
+                    self.outputLogger("Skipped the asset import because another operation is running.")
+                else:
+                    self.commandQueue.run([gmcManager.importGMCProject(godotExecutable, createdPath)])
+
+            runInThread(build, built, lambda message: self._error(f"Could not create the GMC project: {message}"))
+
+        self.outputLogger(f"Checking which GMC version '{environment.venvName}' needs…")
+        runInThread(
+            lambda: gmcManager.requiredGMCVersion(environment), versionKnown, lambda _message: versionKnown(None)
+        )
 
     # The following is used to create an existing MPF machine by directory
     def addExistingProject(self) -> None:
