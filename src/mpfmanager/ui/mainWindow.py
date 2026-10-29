@@ -337,9 +337,16 @@ class MainWindow(QMainWindow):
             row = self.venvAvailableTable.rowCount()
             self.venvAvailableTable.insertRow(row)
             self.venvAvailableTable.setItem(row, 0, _item(environment.venvName, environment.venvName))
-            mpfVersionItem = _item(environment.installedMPFVersion + ("  (editable)" if environment.isEditable else ""))
-            if environment.isEditable:
+            if environment.editableMPFRef:
+                mpfVersionItem = _item(f"{environment.installedMPFVersion}  (editable, {environment.editableMPFRef})")
+                mpfVersionItem.setToolTip(
+                    f"Tracks {environment.editableMPFRef} from GitHub, source at {environment.editableMPFPath}"
+                )
+            elif environment.isEditable:
+                mpfVersionItem = _item(f"{environment.installedMPFVersion}  (editable)")
                 mpfVersionItem.setToolTip(f"Installed in editable mode from {environment.editableMPFPath}")
+            else:
+                mpfVersionItem = _item(environment.installedMPFVersion)
             self.venvAvailableTable.setItem(row, 1, mpfVersionItem)
             self.venvAvailableTable.setItem(row, 2, _item(environment.installedPython))
             self.venvAvailableTable.setItem(row, 3, _item(", ".join(environment.additionalPackages)))
@@ -483,7 +490,7 @@ class MainWindow(QMainWindow):
             if folder != self.storedData.settings.venvDirectory:
                 self.storedData.settings.venvDirectory = folder
                 self.storedData.saveConfiguration()
-            self._applyPlan(dialog.plan(), create=True)
+            self._applyDialogPlan(dialog, create=True)
 
     # The following changes the MPF related to a selected VENV
     def changeVENVmpf(self) -> None:
@@ -492,12 +499,22 @@ class MainWindow(QMainWindow):
             return
         dialog = VENVManagementDialog(self.storedData, self, environment)
         if dialog.exec():
-            self._applyPlan(dialog.plan(), create=False)
+            self._applyDialogPlan(dialog, create=False)
+
+    # The following builds the plan from an accepted dialog, reporting problems such as git being missing
+    def _applyDialogPlan(self, dialog: VENVManagementDialog, create: bool) -> None:
+        try:
+            plannedVENV = dialog.plan()
+        except OSError as planException:
+            self._error(str(planException))
+            return
+        self._applyPlan(plannedVENV, create)
 
     # The following attempts to create a venv based on the plan via a dialog
     def _applyPlan(self, plannedVENV: venvDialogData, create: bool) -> None:
         try:
-            commandList = []
+            # A github source is cloned (or updated) first, so a failed clone leaves no half made environment
+            commandList = list(plannedVENV.sourceCommands)
             if create:
                 commandList.append(uvCMDs.setupVENV(plannedVENV.venvPath, plannedVENV.pythonVersion))
             if plannedVENV.packagesToRemove:
@@ -532,6 +549,7 @@ class MainWindow(QMainWindow):
                         plannedVENV.mpfVersion,
                         plannedVENV.companionPackages,
                         editablePath,
+                        plannedVENV.editableMPFRef,
                     )
                 )
             else:
@@ -544,8 +562,11 @@ class MainWindow(QMainWindow):
                     plannedVENV.companionPackages,
                 )
                 environment.editableMPFPath = editablePath
+                environment.editableMPFRef = plannedVENV.editableMPFRef
                 self.storedData.saveConfiguration()
             sourceText = f" (editable from {editablePath})" if editablePath else ""
+            if plannedVENV.editableMPFRef:
+                sourceText = f" (editable, {plannedVENV.editableMPFRef} from GitHub at {editablePath})"
             self.outputLogger(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}{sourceText}.")
             self.refreshMainWindow()
 

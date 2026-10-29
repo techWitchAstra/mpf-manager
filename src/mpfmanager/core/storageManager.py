@@ -41,6 +41,7 @@ class VirtualEnvironment:
     installedMPFVersion: str
     additionalPackages: list[str] = field(default_factory=list)
     editableMPFPath: str = ""
+    editableMPFRef: str = ""
 
     # The following property returns the path to its respective virtual environment
     @property
@@ -127,6 +128,7 @@ class StorageProcessor:
                 installedMPFVersion=str(environment.get("installedMPFVersion", "")),
                 additionalPackages=[str(x) for x in environment.get("additionalPackages") or []],
                 editableMPFPath=str(environment.get("editableMPFPath") or ""),
+                editableMPFRef=str(environment.get("editableMPFRef") or ""),
             )
             for environment in data.get("environmentList") or []
         ]
