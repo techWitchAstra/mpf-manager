@@ -1,13 +1,14 @@
 [project]
 name = "mpf-manager"
-version = "0.1.1"
+version = "0.1.2"
 description = "Utility for managing MPF and Python Virtual Environments"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "certifi>2024.2.2",
     "packaging>=24.0",
-    "pyside6>=6.8",
+    # 6.12.0 drops references to None/True/False on Python 3.10 and 3.11, which crashes the interpreter
+    "pyside6>=6.8,!=6.12.0",
     "ruamel-yaml>=0.18",
     "truststore>=0.9",
     "uv>=0.5",
