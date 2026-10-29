@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # The following imports the UI related elements as needed for the dialogs
@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -36,7 +35,7 @@ from mpfmanager.core import compatibilityManager, gmcManager, sourceManager
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
 from mpfmanager.core.storageManager import Project, Settings, StorageProcessor, VirtualEnvironment
-from mpfmanager.ui.uiWorkers import CommandQueue, runInThread
+from mpfmanager.ui.uiWorkers import runInThread
 
 # The following delcares packages to be installed
 PACKAGES = ["mpf", *compatibilityManager.MPF_ADD_ONS]
@@ -55,6 +54,8 @@ class venvDialogData:
     companionPackages: list[str]
     packagesToRemove: list[str]
     editableMPFPath: Path | None = None
+    editableMPFRef: str = ""
+    sourceCommands: list[list[str]] = field(default_factory=list)
 
 
 # The following creates a browse button and selection widget
@@ -112,7 +113,8 @@ class VENVManagementDialog(QDialog):
         self._nameWasEdited = False
         self.localSource: sourceManager.LocalMPFSource | None = None
         self._sourceProblem: str | None = None
-        self._cloning = False
+        self._branchesRequested = False
+        self._remoteRequest = 0
 
         # The following sets up the window for the widget
         self.setWindowTitle("Change MPF version" if venvObject else "New MPF environment")
@@ -124,25 +126,27 @@ class VENVManagementDialog(QDialog):
         self.venvDialogName.textEdited.connect(lambda: setattr(self, "_nameWasEdited", True))
         self.venvDialogName.textChanged.connect(self._updateVENVLocation)
 
-        # The following lets the user choose between a PyPI release of mpf or a local editable source folder
+        # The following lets the user choose between a PyPI release of mpf, a github branch, or a local source folder
         self.sourceChoice = QComboBox()
         self.sourceChoice.addItem("PyPI release", "pypi")
-        self.sourceChoice.addItem("Local MPF source (editable)", "editable")
+        self.sourceChoice.addItem("GitHub branch (editable)", "github")
+        self.sourceChoice.addItem("Local MPF source (editable)", "local")
         self.sourceChoice.setToolTip("Editable installs run MPF straight from a source folder, e.g. a git checkout")
 
-        # The following sets up the editable source folder picker, with an option to clone mpf from github
-        self.editableSourceEdit = QLineEdit(venvObject.editableMPFPath if venvObject else "")
+        # The following sets up the github branch picker, showing where mpf-manager will keep the checkout
+        self.githubBranch = QComboBox()
+        self.githubBranch.setToolTip("dev is the newest development version, x branches are release lines")
+        self.githubBranch.currentIndexChanged.connect(self._readGitHubSource)
+        self.githubLocation = QLabel()
+        self.githubLocation.setWordWrap(True)
+
+        # The following sets up the local editable source folder picker
+        self.editableSourceEdit = QLineEdit(
+            venvObject.editableMPFPath if venvObject and not venvObject.editableMPFRef else ""
+        )
         self.editableSourceEdit.setPlaceholderText("Folder containing an MPF checkout (has mpf/_version.py)")
         self.editableSourceEdit.textChanged.connect(self._readEditableSource)
-        self.cloneSourceButton = QPushButton("Clone from GitHub…")
-        self.cloneSourceButton.clicked.connect(self._cloneEditableSource)
-        self.cloneQueue = CommandQueue(self)
-        self.cloneQueue.outputSignal.connect(self._cloneOutput)
-        self.editableSourceRow = QWidget()
-        editableSourceLayout = QHBoxLayout(self.editableSourceRow)
-        editableSourceLayout.setContentsMargins(0, 0, 0, 0)
-        editableSourceLayout.addWidget(_browseWidget(self.editableSourceEdit, self, "MPF source folder"), 1)
-        editableSourceLayout.addWidget(self.cloneSourceButton)
+        self.editableSourceRow = _browseWidget(self.editableSourceEdit, self, "MPF source folder")
 
         # The following sets up a mpf combination box
         self.dialogMPFVersion = QComboBox()
@@ -177,6 +181,8 @@ class VENVManagementDialog(QDialog):
         self.dialogForm = dialogForm = QFormLayout()
         dialogForm.addRow("Name:", self.venvDialogName)
         dialogForm.addRow("Source:", self.sourceChoice)
+        dialogForm.addRow("MPF branch:", self.githubBranch)
+        dialogForm.addRow("Clones into:", self.githubLocation)
         dialogForm.addRow("MPF source:", self.editableSourceRow)
         dialogForm.addRow("MPF version:", self.dialogMPFVersion)
         dialogForm.addRow("", self.preReleaseCheckbox)
@@ -216,7 +222,12 @@ class VENVManagementDialog(QDialog):
         dialogWidgetLayout.addWidget(self.dialogButtons)
 
         # The following starts on the source the environment already uses
-        self.sourceChoice.setCurrentIndex(1 if venvObject is not None and venvObject.isEditable else 0)
+        startingSource = "pypi"
+        if venvObject is not None and venvObject.editableMPFRef:
+            startingSource = "github"
+        elif venvObject is not None and venvObject.isEditable:
+            startingSource = "local"
+        self.sourceChoice.setCurrentIndex(self.sourceChoice.findData(startingSource))
         self.sourceChoice.currentIndexChanged.connect(self._sourceWasChanged)
         self._sourceWasChanged()
 
@@ -248,23 +259,38 @@ class VENVManagementDialog(QDialog):
 
     # Editable source handling
 
-    # The following returns true when mpf will be installed from a local source folder
+    # The following returns true when mpf will be installed in editable mode (from github or a local folder)
     def _isEditable(self) -> bool:
-        return self.sourceChoice.currentData() == "editable"
+        return self.sourceChoice.currentData() in ("github", "local")
 
-    # The following shows the source folder row and swaps the version list when the source changes
+    # The following returns true when mpf will be cloned from a github branch
+    def _isGitHub(self) -> bool:
+        return self.sourceChoice.currentData() == "github"
+
+    # The following shows the rows for the chosen source and swaps the version list when the source changes
     def _sourceWasChanged(self) -> None:
         editable = self._isEditable()
-        self.dialogForm.setRowVisible(self.editableSourceRow, editable)
+        self.dialogForm.setRowVisible(self.githubBranch, self._isGitHub())
+        self.dialogForm.setRowVisible(self.githubLocation, self._isGitHub())
+        self.dialogForm.setRowVisible(self.editableSourceRow, self.sourceChoice.currentData() == "local")
         self.dialogForm.setRowVisible(self.preReleaseCheckbox, not editable)
         self.dialogMPFVersion.setEnabled(not editable)
-        self._readEditableSource()
+        if self._isGitHub():
+            self._loadGitHubBranches()
+        elif editable:
+            self._readEditableSource()
+        else:
+            self.localSource = None
+            self._sourceProblem = None
+            self._populateMPFVersions()
 
-    # The following reads the chosen source folder so its version can be used
+    # The following reads the chosen local source folder so its version can be used
     def _readEditableSource(self) -> None:
+        if self.sourceChoice.currentData() != "local":
+            return
         sourceText = self.editableSourceEdit.text().strip()
         self.localSource = None
-        self._sourceProblem = "Choose an MPF source folder, or clone one from GitHub." if not sourceText else None
+        self._sourceProblem = "Choose an MPF source folder." if not sourceText else None
         if sourceText:
             try:
                 self.localSource = sourceManager.readLocalMPFSource(Path(sourceText).expanduser())
@@ -272,7 +298,69 @@ class VENVManagementDialog(QDialog):
                 self._sourceProblem = str(sourceException)
         self._populateMPFVersions()
 
-    # The following shows the local source's version as the only mpf choice
+    # The following lists mpf's branches from github the first time the github source is chosen
+    def _loadGitHubBranches(self) -> None:
+        if self._branchesRequested:
+            self._readGitHubSource()
+            return
+        self._branchesRequested = True
+        self.localSource = None
+        self._sourceProblem = "Loading MPF branches from GitHub…"
+        self._populateMPFVersions()
+        runInThread(sourceManager.listMPFBranches, self._gitHubBranchesLoaded, self._gitHubBranchesFailed)
+
+    # The following fills the branch box, starting on the branch the environment already tracks or dev
+    def _gitHubBranchesLoaded(self, branchNames: list[str]) -> None:
+        startingBranch = (self.venvObject.editableMPFRef if self.venvObject else "") or sourceManager.MPF_DEV_BRANCH
+        self.githubBranch.blockSignals(True)
+        self.githubBranch.clear()
+        for branchName in branchNames:
+            self.githubBranch.addItem(branchName, branchName)
+        self.githubBranch.setCurrentIndex(max(self.githubBranch.findData(startingBranch), 0))
+        self.githubBranch.blockSignals(False)
+        if self._isGitHub():
+            self._readGitHubSource()
+
+    # The following reports a failure to list the branches, which usually means git or the network is missing
+    def _gitHubBranchesFailed(self, errorMessage: str) -> None:
+        self._branchesRequested = False
+        self._sourceProblem = f"Could not list MPF branches from GitHub: {errorMessage}"
+        if self._isGitHub():
+            self._populateMPFVersions()
+
+    # The following returns where the chosen github branch will be cloned to
+    def _gitHubSourcePath(self) -> Path | None:
+        branchName = self.githubBranch.currentData()
+        return sourceManager.managedSourcePath(self.storageObject.homePath, branchName) if branchName else None
+
+    # The following reads the chosen branch's version from github so it can be shown before anything is cloned
+    def _readGitHubSource(self) -> None:
+        branchName, sourcePath = self.githubBranch.currentData(), self._gitHubSourcePath()
+        if not self._isGitHub() or not branchName or sourcePath is None:
+            return
+        self.githubLocation.setText(str(sourcePath))
+        self.localSource = None
+        self._sourceProblem = f"Reading {branchName} from GitHub…"
+        self._populateMPFVersions()
+
+        # The following ignores answers for a branch that is no longer selected
+        self._remoteRequest += 1
+        requestNumber = self._remoteRequest
+
+        def remoteRead(remoteSource: sourceManager.LocalMPFSource) -> None:
+            if requestNumber == self._remoteRequest and self._isGitHub():
+                self.localSource = remoteSource
+                self._sourceProblem = None
+                self._populateMPFVersions()
+
+        def remoteFailed(errorMessage: str) -> None:
+            if requestNumber == self._remoteRequest and self._isGitHub():
+                self._sourceProblem = f"Could not read {branchName} from GitHub: {errorMessage}"
+                self._populateMPFVersions()
+
+        runInThread(lambda: sourceManager.readRemoteMPFSource(branchName, sourcePath), remoteRead, remoteFailed)
+
+    # The following shows the editable source's version as the only mpf choice
     def _populateEditableVersion(self) -> None:
         # Add-on choices need the PyPI releases, so nothing is filled in until they have loaded
         if not self.availableReleases:
@@ -281,53 +369,13 @@ class VENVManagementDialog(QDialog):
         self.dialogMPFVersion.blockSignals(True)
         self.dialogMPFVersion.clear()
         if self.localSource:
-            self.dialogMPFVersion.addItem(f"{self.localSource.mpfVersion}  (editable)", self.localSource.mpfVersion)
+            sourceLabel = f"editable, {self.githubBranch.currentData()}" if self._isGitHub() else "editable"
+            self.dialogMPFVersion.addItem(
+                f"{self.localSource.mpfVersion}  ({sourceLabel})", self.localSource.mpfVersion
+            )
             self.dialogMPFVersion.setCurrentIndex(0)
         self.dialogMPFVersion.blockSignals(False)
         self._mpfVersionWasChanged()
-
-    # The following clones mpf's source from github into a chosen folder, then uses it as the source
-    def _cloneEditableSource(self) -> None:
-        branchName, chosen = QInputDialog.getItem(
-            self, "Clone MPF", "Branch to clone:", sourceManager.MPF_SOURCE_BRANCHES, 0, False
-        )
-        if not chosen:
-            return
-        parentFolder = QFileDialog.getExistingDirectory(
-            self, "Choose where to clone MPF", self.storageObject.settings.projectDirectory
-        )
-        if not parentFolder:
-            return
-        destination = Path(parentFolder) / f"mpf-{branchName}"
-        if destination.exists():
-            QMessageBox.warning(self, "Clone MPF", f"'{destination}' already exists, choose it as the source instead.")
-            return
-        try:
-            cloneCommand = sourceManager.cloneMPFSource(destination, branchName)
-        except FileNotFoundError as gitException:
-            QMessageBox.warning(self, "Clone MPF", str(gitException))
-            return
-
-        # The following finishes up the clone, using the new folder as the source if it worked
-        def cloned(ok: bool) -> None:
-            self._cloning = False
-            self.cloneSourceButton.setEnabled(True)
-            if ok:
-                self.editableSourceEdit.setText(str(destination))
-            else:
-                self._validateVENV()
-                self.operationStatus.setText(f"Cloning MPF ({branchName}) failed.")
-
-        self._cloning = True
-        self.cloneSourceButton.setEnabled(False)
-        self._validateVENV()
-        self.cloneQueue.run([cloneCommand], cloned)
-
-    # The following shows the latest line of git's output while cloning
-    def _cloneOutput(self, outputText: str) -> None:
-        lastLine = outputText.replace("\r", "\n").strip().splitlines()[-1:]
-        if lastLine:
-            self.operationStatus.setText(lastLine[0])
 
     # Updaters
 
@@ -336,6 +384,11 @@ class VENVManagementDialog(QDialog):
     def _populateMPFVersions(self) -> None:
         if self._isEditable():
             self._populateEditableVersion()
+            return
+
+        # Nothing is filled in until PyPI has loaded, otherwise an existing environment's add-ons would be unticked
+        if not self.availableReleases:
+            self._validateVENV()
             return
         compatibleReleases = compatibilityManager.filterPyPIReleases(
             self.availableReleases.get("mpf", []), self.preReleaseCheckbox.isChecked()
@@ -439,6 +492,8 @@ class VENVManagementDialog(QDialog):
         version, python = self.dialogMPFVersion.currentData(), self.pythonVersionDialog.currentData()
         if version and python:
             sourceTag = "-editable" if self._isEditable() else ""
+            if self._isGitHub():
+                sourceTag = f"-{self.githubBranch.currentData()}"
             self.venvDialogName.setText(f"mpf-{version}{sourceTag}-py{python}")
 
     # The following updates the location text for a virtual environment
@@ -462,10 +517,10 @@ class VENVManagementDialog(QDialog):
         name = self.venvDialogName.text().strip()
         if not self.availableReleases:
             problem = ""  # still loading or failed; status label explains
-        elif self._cloning:
-            problem = ""  # the clone's progress is shown in the status label
         elif self._isEditable() and self._sourceProblem:
             problem = self._sourceProblem
+        elif self._isGitHub() and self._gitHubFolderProblem():
+            problem = self._gitHubFolderProblem()
         elif (
             self._isEditable()
             and self.venvObject
@@ -495,13 +550,27 @@ class VENVManagementDialog(QDialog):
                 problem = f"An environment named '{name}' already exists."
             elif self._venvPath().exists():
                 problem = f"'{self._venvPath()}' already exists."
-        if self._cloning:
-            pass
-        elif problem is not None and self.availableReleases:
+        if problem is not None and self.availableReleases:
             self.operationStatus.setText(problem)
         elif self.availableReleases:
-            self.operationStatus.setText("")
+            self.operationStatus.setText(self._gitHubFolderNote())
         self.dialogButtons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(problem is None)
+
+    # The following returns a problem when the github branch's managed folder holds something other than mpf
+    def _gitHubFolderProblem(self) -> str:
+        sourcePath = self._gitHubSourcePath()
+        if sourcePath is None or sourceManager.isMPFSource(sourcePath):
+            return ""
+        if sourcePath.exists() and (not sourcePath.is_dir() or any(sourcePath.iterdir())):
+            return f"'{sourcePath}' already exists and is not an MPF source folder."
+        return ""
+
+    # The following tells the user when an existing checkout will be updated rather than cloned
+    def _gitHubFolderNote(self) -> str:
+        sourcePath = self._gitHubSourcePath()
+        if self._isGitHub() and sourcePath is not None and sourceManager.isMPFSource(sourcePath):
+            return f"The existing checkout at {sourcePath} will be updated (git pull)."
+        return ""
 
     # The following creates a skeleton virtual environment
     def plan(self) -> venvDialogData:
@@ -509,6 +578,8 @@ class VENVManagementDialog(QDialog):
 
         # An editable install gets mpf from the source folder instead of a pinned release
         editablePath = self.localSource.sourcePath if self._isEditable() and self.localSource else None
+        branchName = self.githubBranch.currentData() if self._isGitHub() and editablePath else ""
+        sourceCommands = sourceManager.sourceCommands(editablePath, branchName) if editablePath and branchName else []
         mpfVersionRequirements = [] if editablePath else [f"mpf=={mpfVersion}"]
         companionPackages, packagesToRemove = [], []
         for package, box in self.mpfAddOnDialogs.items():
@@ -527,6 +598,8 @@ class VENVManagementDialog(QDialog):
             companionPackages=companionPackages,
             packagesToRemove=packagesToRemove,
             editableMPFPath=editablePath,
+            editableMPFRef=branchName,
+            sourceCommands=sourceCommands,
         )
 
 
