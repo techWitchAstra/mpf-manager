@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -46,7 +47,7 @@ from PySide6.QtWidgets import (
 from mpfmanager.core import compatibilityManager, gmcManager, sourceManager
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
-from mpfmanager.core.storageManager import Project, StorageProcessor, VirtualEnvironment
+from mpfmanager.core.storageManager import Project, RunProfile, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui.dialogs import (
     GMCProjectDialog,
     SettingsDialog,
@@ -290,12 +291,52 @@ class MainWindow(QMainWindow):
         runConfigurationLayout.addWidget(self.runMPFButton)
         runConfigurationLayout.addWidget(self.stopMPFButton)
 
+        # The following sets up the list of saved run profiles
+        self.runProfileOption = QComboBox()
+        self.runProfileOption.setMinimumWidth(220)
+        self.runProfileOption.currentIndexChanged.connect(self._updateButtons)
+
+        # The following adds a button to run the chosen run profile
+        self.runProfileButton = QPushButton("Run profile")
+        self.runProfileButton.clicked.connect(lambda: self.runRunProfile(self.selectedRunProfile()))
+
+        # The following adds a button to save the selected project and the run options above as a run profile
+        self.saveRunProfileButton = QPushButton("Save as profile…")
+        self.saveRunProfileButton.setToolTip("Save the selected project and the run options above as a run profile")
+        self.saveRunProfileButton.clicked.connect(self.saveRunProfile)
+
+        # The following adds a button to put a run profile's project and options back into the run options
+        self.loadRunProfileButton = QPushButton("Load into options")
+        self.loadRunProfileButton.setToolTip("Select the profile's project and set the run options above to match it")
+        self.loadRunProfileButton.clicked.connect(lambda: self.loadRunProfile(self.selectedRunProfile()))
+
+        # The following adds a button to delete the chosen run profile
+        self.deleteRunProfileButton = QPushButton("Delete profile")
+        self.deleteRunProfileButton.clicked.connect(self.deleteRunProfile)
+
+        # The following lets the chosen run profile be run when mpf-manager starts
+        self.runAtStartupCheckBox = QCheckBox("Run at startup")
+        self.runAtStartupCheckBox.setToolTip("Run this profile automatically when MPF-Manager starts")
+        self.runAtStartupCheckBox.toggled.connect(self._setRunAtStartup)
+
+        # The following lays out the run profile controls
+        runProfileLayout = QHBoxLayout()
+        runProfileLayout.addWidget(QLabel("Run profile:"))
+        runProfileLayout.addWidget(self.runProfileOption, 1)
+        runProfileLayout.addWidget(self.runProfileButton)
+        runProfileLayout.addWidget(self.loadRunProfileButton)
+        runProfileLayout.addWidget(self.saveRunProfileButton)
+        runProfileLayout.addWidget(self.runAtStartupCheckBox)
+        runProfileLayout.addStretch()
+        runProfileLayout.addWidget(self.deleteRunProfileButton)
+
         # The following puts all the project tab elements together
         projectTabPage = QWidget()
         projectTabLayout = QVBoxLayout(projectTabPage)
         projectTabLayout.addWidget(self.projectListTable)
         projectTabLayout.addLayout(projectManagementButtonBar)
         projectTabLayout.addLayout(runConfigurationLayout)
+        projectTabLayout.addLayout(runProfileLayout)
 
         self._updateRunOptions()
 
@@ -326,6 +367,19 @@ class MainWindow(QMainWindow):
         if selectedProjectItem is None:
             return None
         return self.storedData.getProjectbyPath(selectedProjectItem.data(Qt.ItemDataRole.UserRole))
+
+    # The following outputs the chosen run profile
+    def selectedRunProfile(self) -> RunProfile | None:
+        return self.storedData.getRunProfileByName(self.runProfileOption.currentData())
+
+    # The following selects a project's row in the project table
+    def _selectProjectRow(self, projectPath: str) -> bool:
+        for row in range(self.projectListTable.rowCount()):
+            projectItem = self.projectListTable.item(row, 0)
+            if projectItem is not None and projectItem.data(Qt.ItemDataRole.UserRole) == projectPath:
+                self.projectListTable.selectRow(row)
+                return True
+        return False
 
     # The following refreshes the main Window
     def refreshMainWindow(self) -> None:
@@ -384,7 +438,31 @@ class MainWindow(QMainWindow):
             self.projectListTable.setItem(row, 4, _item(projectTableItem.projectPath))
             if selectedProject and projectTableItem.projectPath == selectedProject.projectPath:
                 self.projectListTable.selectRow(row)
+
+        # The following updates the run profile list, keeping the chosen profile chosen
+        chosenProfileName = self.runProfileOption.currentData()
+        self.runProfileOption.blockSignals(True)
+        self.runProfileOption.clear()
+        for profile in self.storedData.runProfileList:
+            self.runProfileOption.addItem(self._runProfileLabel(profile), profile.profileName)
+        self.runProfileOption.setCurrentIndex(max(self.runProfileOption.findData(chosenProfileName), 0))
+        self.runProfileOption.blockSignals(False)
         self._updateButtons()
+
+    # The following describes a run profile for the run profile list
+    def _runProfileLabel(self, profile: RunProfile) -> str:
+        project = self.storedData.getProjectbyPath(profile.projectPath)
+        projectName = project.projectName if project else "missing project"
+        modeLabel = next(
+            (label for label, mode in mpfProjects.RUN_MODES.items() if mode == profile.runMode), profile.runMode
+        )
+        startupText = (
+            "  [startup]"
+            if self.storedData.settings.runProfileAtStartup
+            and self.storedData.settings.startupRunProfile == profile.profileName
+            else ""
+        )
+        return f"{profile.profileName}  ({projectName}, {modeLabel}){startupText}"
 
     # The Following updates the button States
     def _updateButtons(self) -> None:
@@ -407,6 +485,18 @@ class MainWindow(QMainWindow):
             self.storedData.getVENVbyName(projectTableItem.virtualEnvironment) if projectTableItem else None
         )
         self.createGMCButton.setEnabled(idle and mpfProjects.isGMCEligible(projectEnvironment))
+
+        # The following updates the run profile controls for the chosen profile
+        runProfile = self.selectedRunProfile()
+        profileRunning = runProfile is not None and runProfile.projectPath in self.runningProcesses
+        self.runProfileButton.setEnabled(runProfile is not None and not profileRunning)
+        self.loadRunProfileButton.setEnabled(runProfile is not None)
+        self.deleteRunProfileButton.setEnabled(runProfile is not None)
+        self.saveRunProfileButton.setEnabled(projectTableItem is not None)
+        self.runAtStartupCheckBox.setEnabled(runProfile is not None)
+        self.runAtStartupCheckBox.blockSignals(True)
+        self.runAtStartupCheckBox.setChecked(runProfile is not None and self.storedData.startupProfile() is runProfile)
+        self.runAtStartupCheckBox.blockSignals(False)
 
     # The following sets the project environment
     def _setProjectEnvironment(self, path: str, env_name: str | None) -> None:
@@ -779,26 +869,146 @@ class MainWindow(QMainWindow):
             self.outputLogger(f"Removed '{projectToRemove.projectName}' from the list (files were not deleted).")
             self.refreshMainWindow()
 
-    # The following is used to run a mpf project
+    # The following collects the run options currently shown in the projects tab into a run profile
+    def currentRunOptions(self, project: Project, profileName: str = "") -> RunProfile:
+        return RunProfile(
+            profileName=profileName,
+            projectPath=project.projectPath,
+            runMode=self.runModeOption.currentData(),
+            hardwareArguments=list(self.hardwareOption.currentData()),
+            noMediaController=self.runMediaControllerOption.isEnabled() and self.runMediaControllerOption.isChecked(),
+            runMonitor=self.runMPFMonitorCheckBox.isEnabled() and self.runMPFMonitorCheckBox.isChecked(),
+            openGodotEditor=self.openGodotEditorCheckBox.isEnabled() and self.openGodotEditorCheckBox.isChecked(),
+            extraArguments=self.extraRunArguments.text(),
+        )
+
+    # The following is used to run the selected mpf project with the options shown in the projects tab
     def runMPFProject(self) -> None:
         projectToRun = self.selectedProject()
+        if projectToRun:
+            self._runProject(projectToRun, self.currentRunOptions(projectToRun))
+
+    # The following runs a saved run profile
+    def runRunProfile(self, profile: RunProfile | None) -> None:
+        if profile is None:
+            return
+        projectToRun = self.storedData.getProjectbyPath(profile.projectPath)
+        if projectToRun is None:
+            self._error(f"The project for run profile '{profile.profileName}' is no longer in the project list.")
+            return
+        if projectToRun.projectPath in self.runningProcesses:
+            self._error(f"'{projectToRun.projectName}' is already running.")
+            return
+        self.outputLogger(f"Running profile '{profile.profileName}'…")
+        self._runProject(projectToRun, profile)
+
+    # The following runs the run profile chosen to run at startup, if running one at startup is enabled
+    def runStartupProfile(self) -> None:
+        settings = self.storedData.settings
+        if not settings.runProfileAtStartup:
+            return
+        profile = self.storedData.startupProfile()
+        if profile is None:
+            self.outputLogger(f"The startup run profile '{settings.startupRunProfile}' no longer exists.")
+            return
+        self.tabs.setCurrentIndex(1)
+        self._selectProjectRow(profile.projectPath)
+        self.runProfileOption.setCurrentIndex(max(self.runProfileOption.findData(profile.profileName), 0))
+        self.runRunProfile(profile)
+
+    # The following saves the selected project and the run options shown as a run profile
+    def saveRunProfile(self) -> None:
+        project = self.selectedProject()
+        if project is None:
+            return
+        chosenProfile = self.selectedRunProfile()
+        suggestedName = (
+            chosenProfile.profileName
+            if chosenProfile and chosenProfile.projectPath == project.projectPath
+            else f"{project.projectName} - {self.runModeOption.currentText()}"
+        )
+        profileName, accepted = QInputDialog.getText(self, "Save run profile", "Profile name:", text=suggestedName)
+        profileName = profileName.strip()
+        if not accepted or not profileName:
+            return
+        if (
+            self.storedData.getRunProfileByName(profileName)
+            and QMessageBox.question(self, "Save run profile", f"Replace the run profile '{profileName}'?")
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            self.storedData.saveRunProfile(self.currentRunOptions(project, profileName))
+        except ValueError as exc:
+            self._error(str(exc))
+            return
+        self.outputLogger(f"Saved run profile '{profileName}'.")
+        self.refreshMainWindow()
+        self.runProfileOption.setCurrentIndex(self.runProfileOption.findData(profileName))
+
+    # The following selects a run profile's project and sets the run options to match the profile
+    def loadRunProfile(self, profile: RunProfile | None) -> None:
+        if profile is None:
+            return
+        if not self._selectProjectRow(profile.projectPath):
+            self._error(f"The project for run profile '{profile.profileName}' is no longer in the project list.")
+            return
+        modeIndex = self.runModeOption.findData(profile.runMode)
+        if modeIndex >= 0:
+            self.runModeOption.setCurrentIndex(modeIndex)
+        for index in range(self.hardwareOption.count()):
+            if self.hardwareOption.itemData(index) == profile.hardwareArguments:
+                self.hardwareOption.setCurrentIndex(index)
+        self.runMediaControllerOption.setChecked(profile.noMediaController)
+        self.runMPFMonitorCheckBox.setChecked(profile.runMonitor)
+        self.openGodotEditorCheckBox.setChecked(profile.openGodotEditor)
+        self.extraRunArguments.setText(profile.extraArguments)
+        self._updateRunOptions()
+
+    # The following deletes the chosen run profile
+    def deleteRunProfile(self) -> None:
+        profile = self.selectedRunProfile()
+        if profile is None:
+            return
+        if (
+            QMessageBox.question(self, "Delete run profile", f"Delete the run profile '{profile.profileName}'?")
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self.storedData.removeRunProfile(profile.profileName)
+        self.outputLogger(f"Deleted run profile '{profile.profileName}'.")
+        self.refreshMainWindow()
+
+    # The following enables or disables running the chosen run profile at startup
+    def _setRunAtStartup(self, enabled: bool) -> None:
+        profile = self.selectedRunProfile()
+        if profile is None:
+            return
+        if enabled:
+            self.storedData.setStartupRunProfile(profile.profileName)
+            self.outputLogger(f"'{profile.profileName}' will run when MPF-Manager starts.")
+        elif self.storedData.startupProfile() is profile:
+            self.storedData.setStartupRunProfile(None)
+            self.outputLogger("No run profile will run when MPF-Manager starts.")
+        self.refreshMainWindow()
+
+    # The following runs a project using the given run options
+    def _runProject(self, projectToRun: Project, runOptions: RunProfile) -> None:
 
         # The following catches situations where a project or environment are not
         # setup properly
-        if not projectToRun:
-            return
         environment = self.storedData.getVENVbyName(projectToRun.virtualEnvironment)
         if not environment:
             self._error("Choose an environment for this project first.")
             return
-        mpfRunMode = self.runModeOption.currentData()
+        mpfRunMode = runOptions.runMode
         if mpfRunMode in ("both", "mc") and "mpf-mc" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-mc installed.")
             return
         if mpfRunMode == "monitor" and "mpf-monitor" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
-        if self.runMPFMonitorCheckBox.isChecked() and "mpf-monitor" not in environment.additionalPackages:
+        if runOptions.runMonitor and "mpf-monitor" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
         gmcCommand: list[str] | None = None
@@ -816,9 +1026,7 @@ class MainWindow(QMainWindow):
             gmcFolderPath = self._resolveGMCPath(projectToRun)
             if gmcFolderPath is None:
                 return
-            gmcCommand = mpfProjects.runGMC(
-                godotExecutablePath, gmcFolderPath, self.openGodotEditorCheckBox.isChecked()
-            )
+            gmcCommand = mpfProjects.runGMC(godotExecutablePath, gmcFolderPath, runOptions.openGodotEditor)
 
         # GMC only needs godot, MPF is assumed to already be running elsewhere (or not needed for editing)
         if mpfRunMode == "gmconly" and gmcCommand and gmcFolderPath:
@@ -831,21 +1039,21 @@ class MainWindow(QMainWindow):
 
         # The following catches exceptions related to extra arguments
         try:
-            extraArguments = shlex.split(self.extraRunArguments.text())
+            extraArguments = shlex.split(runOptions.extraArguments)
         except ValueError as argumentException:
             self._error(f"Invalid extra arguments: {argumentException}")
             return
 
-        if mpfRunMode == "game" and self.runMediaControllerOption.isChecked():
+        if mpfRunMode == "game" and runOptions.noMediaController:
             extraArguments.insert(0, "-b")
 
             # The following sets up the commands for the game and, if requested, the monitor
         runCommands = mpfProjects.runMPFWithMonitor(
             environment,
             mpfRunMode,
-            self.hardwareOption.currentData(),
+            runOptions.hardwareArguments,
             extraArguments,
-            self.runMPFMonitorCheckBox.isChecked(),
+            runOptions.runMonitor,
         )
 
         # The following starts the game, and schedules the monitor to start once the game has had time to start up
@@ -898,10 +1106,11 @@ class MainWindow(QMainWindow):
 
     # The following is used to edit the settings of the application
     def edit_settings(self) -> None:
-        settingsDialog = SettingsDialog(self.storedData.settings, self)
+        settingsDialog = SettingsDialog(self.storedData.settings, self, self.storedData.runProfileList)
         if settingsDialog.exec():
             settingsDialog.applySettings(self.storedData.settings)
             self.storedData.saveConfiguration()
+            self.refreshMainWindow()
 
     # The following is used to close the application
     def closeEvent(self, closeEvent) -> None:  # noqa: N802 - Qt override

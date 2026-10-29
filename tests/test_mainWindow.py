@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from mpfmanager.core import compatibilityManager, projectManager, uvManager
 from mpfmanager.core.compatibilityManager import PyPIRelease
-from mpfmanager.core.storageManager import Project, StorageProcessor, VirtualEnvironment
+from mpfmanager.core.storageManager import Project, RunProfile, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui import dialogs, mainWindow
 from mpfmanager.ui.dialogs import venvDialogData
 from mpfmanager.ui.mainWindow import MainWindow
@@ -513,3 +513,128 @@ def test_verifyVENVPackages(qtbot, tmp_path, monkeypatch):
     window.venvAvailableTable.selectRow(0)
     window.verifyVENVPackages()
     qtbot.waitUntil(lambda: "mpf is not installed in 'env'" in window.outputViewer.toPlainText())
+
+
+def test_saveRunProfileFromRunOptions(qtbot, tmp_path, monkeypatch):
+    window = _projectWindow(qtbot, tmp_path, _installedEnvironment(tmp_path, addOns=["mpf-monitor"]))
+    _selectMode(window, "game")
+    window.runMediaControllerOption.setChecked(True)
+    window.runMPFMonitorCheckBox.setChecked(True)
+    window.hardwareOption.setCurrentIndex(1)
+    window.extraRunArguments.setText("-v")
+    monkeypatch.setattr(mainWindow.QInputDialog, "getText", lambda *_a, **_k: (" attract ", True))
+    window.saveRunProfile()
+    profile = StorageProcessor().getRunProfileByName("attract")
+    assert profile == RunProfile("attract", str(tmp_path / "machine"), "game", ["-x"], True, True, False, "-v")
+    assert window.selectedRunProfile() == window.storedData.getRunProfileByName("attract")
+    assert window.runProfileOption.currentText().startswith("attract  (machine, Game)")
+
+
+def test_saveRunProfileAsksBeforeReplacing(qtbot, tmp_path, monkeypatch):
+    window = _projectWindow(qtbot, tmp_path, _installedEnvironment(tmp_path))
+    window.storedData.saveRunProfile(RunProfile("p", str(tmp_path / "machine"), "monitor"))
+    monkeypatch.setattr(mainWindow.QInputDialog, "getText", lambda *_a, **_k: ("p", True))
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    _selectMode(window, "game")
+    window.saveRunProfile()
+    assert window.storedData.getRunProfileByName("p").runMode == "monitor"
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.Yes)
+    window.saveRunProfile()
+    assert window.storedData.getRunProfileByName("p").runMode == "game"
+    monkeypatch.setattr(mainWindow.QInputDialog, "getText", lambda *_a, **_k: ("other", False))
+    window.saveRunProfile()
+    assert window.storedData.getRunProfileByName("other") is None
+
+
+def test_runRunProfileUsesSavedOptions(qtbot, tmp_path, monkeypatch):
+    environment = _installedEnvironment(tmp_path)
+    window = _projectWindow(qtbot, tmp_path, environment)
+    window.storedData.saveRunProfile(
+        RunProfile("p", str(tmp_path / "machine"), "game", ["-x"], True, False, False, "-v")
+    )
+    window.refreshMainWindow()
+    started = _spyStarts(window, monkeypatch)
+    _selectMode(window, "monitor")
+    window.runProfileButton.click()
+    command, label, _workingPath = started[0]
+    assert label == "game"
+    assert command == [str(environment.executable("mpf")), "game", "-t", "-x", "-b", "-v"]
+
+
+def test_runRunProfileErrors(qtbot, tmp_path, monkeypatch):
+    window = _projectWindow(qtbot, tmp_path, _installedEnvironment(tmp_path))
+    errors = _errors(window, monkeypatch)
+    window.runRunProfile(None)
+    window.runRunProfile(RunProfile("gone", str(tmp_path / "gone")))
+    window.runningProcesses[str(tmp_path / "machine")] = {"game": _FakeProcess()}
+    window.runRunProfile(RunProfile("p", str(tmp_path / "machine")))
+    assert errors == [
+        "The project for run profile 'gone' is no longer in the project list.",
+        "'machine' is already running.",
+    ]
+
+
+def test_loadRunProfileSetsRunOptions(qtbot, tmp_path, monkeypatch):
+    store = StorageProcessor()
+    store.addVENV(_installedEnvironment(tmp_path, "0.57.0", ["mpf-mc", "mpf-monitor"]))
+    store.addProject(Project("first", str(_machine(tmp_path / "first")), "env"))
+    store.addProject(Project("second", str(_machine(tmp_path / "second")), "env"))
+    store.saveRunProfile(RunProfile("p", str(tmp_path / "second"), "both", [], False, True, False, "-v"))
+    window = _window(qtbot, store)
+    window.projectListTable.selectRow(0)
+    window.loadRunProfileButton.click()
+    assert window.selectedProject().projectName == "second"
+    assert window.runModeOption.currentData() == "both"
+    assert window.hardwareOption.currentData() == []
+    assert window.runMPFMonitorCheckBox.isChecked()
+    assert window.extraRunArguments.text() == "-v"
+    errors = _errors(window, monkeypatch)
+    window.loadRunProfile(RunProfile("gone", str(tmp_path / "gone")))
+    assert errors == ["The project for run profile 'gone' is no longer in the project list."]
+
+
+def test_runAtStartupCheckBoxAndStartupRun(qtbot, tmp_path, monkeypatch):
+    window = _projectWindow(qtbot, tmp_path, _installedEnvironment(tmp_path))
+    window.storedData.saveRunProfile(RunProfile("p", str(tmp_path / "machine")))
+    window.refreshMainWindow()
+    assert not window.runAtStartupCheckBox.isChecked()
+    window.runAtStartupCheckBox.setChecked(True)
+    assert StorageProcessor().startupProfile().profileName == "p"
+    assert window.runProfileOption.currentText().endswith("[startup]")
+
+    # A fresh window, as at startup, runs the profile
+    restarted = _window(qtbot, StorageProcessor())
+    started = _spyStarts(restarted, monkeypatch)
+    restarted.runStartupProfile()
+    assert [label for _command, label, _path in started] == ["game"]
+    assert restarted.tabs.currentIndex() == 1 and restarted.selectedProject().projectName == "machine"
+
+    window.runAtStartupCheckBox.setChecked(False)
+    assert StorageProcessor().startupProfile() is None
+    disabled = _window(qtbot, StorageProcessor())
+    started = _spyStarts(disabled, monkeypatch)
+    disabled.runStartupProfile()
+    assert started == []
+
+
+def test_startupProfileThatNoLongerExists(qtbot, tmp_path):
+    store = StorageProcessor()
+    store.settings.runProfileAtStartup = True
+    store.settings.startupRunProfile = "gone"
+    window = _window(qtbot, store)
+    window.runStartupProfile()
+    assert "The startup run profile 'gone' no longer exists." in window.outputViewer.toPlainText()
+
+
+def test_deleteRunProfile(qtbot, tmp_path, monkeypatch):
+    window = _projectWindow(qtbot, tmp_path, _installedEnvironment(tmp_path))
+    window.storedData.saveRunProfile(RunProfile("p", str(tmp_path / "machine")))
+    window.storedData.setStartupRunProfile("p")
+    window.refreshMainWindow()
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    window.deleteRunProfileButton.click()
+    assert window.storedData.getRunProfileByName("p") is not None
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.Yes)
+    window.deleteRunProfileButton.click()
+    assert StorageProcessor().runProfileList == [] and StorageProcessor().startupProfile() is None
+    assert window.runProfileOption.count() == 0 and not window.runProfileButton.isEnabled()
