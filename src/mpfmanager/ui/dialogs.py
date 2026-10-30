@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # The following imports the UI related elements as needed for the dialogs
@@ -31,10 +31,10 @@ from PySide6.QtWidgets import (
 )
 
 # The following imnports the needed mpf-manager related functions and classes
-from mpfmanager.core import compatibilityManager
+from mpfmanager.core import compatibilityManager, gmcManager, sourceManager
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
-from mpfmanager.core.storageManager import Settings, StorageProcessor, VirtualEnvironment
+from mpfmanager.core.storageManager import Project, RunProfile, Settings, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui.uiWorkers import runInThread
 
 # The following delcares packages to be installed
@@ -53,6 +53,9 @@ class venvDialogData:
     mpfVersionRequirements: list[str]
     companionPackages: list[str]
     packagesToRemove: list[str]
+    editableMPFPath: Path | None = None
+    editableMPFRef: str = ""
+    sourceCommands: list[list[str]] = field(default_factory=list)
 
 
 # The following creates a browse button and selection widget
@@ -108,6 +111,10 @@ class VENVManagementDialog(QDialog):
         self.availableReleases: dict[str, list[compatibilityManager.PyPIRelease]] = {}
         self.installedVENVPackages: set[str] = set()
         self._nameWasEdited = False
+        self.localSource: sourceManager.LocalMPFSource | None = None
+        self._sourceProblem: str | None = None
+        self._branchesRequested = False
+        self._remoteRequest = 0
 
         # The following sets up the window for the widget
         self.setWindowTitle("Change MPF version" if venvObject else "New MPF environment")
@@ -118,6 +125,28 @@ class VENVManagementDialog(QDialog):
         self.venvDialogName.setEnabled(venvObject is None)
         self.venvDialogName.textEdited.connect(lambda: setattr(self, "_nameWasEdited", True))
         self.venvDialogName.textChanged.connect(self._updateVENVLocation)
+
+        # The following lets the user choose between a PyPI release of mpf, a github branch, or a local source folder
+        self.sourceChoice = QComboBox()
+        self.sourceChoice.addItem("PyPI release", "pypi")
+        self.sourceChoice.addItem("GitHub branch (editable)", "github")
+        self.sourceChoice.addItem("Local MPF source (editable)", "local")
+        self.sourceChoice.setToolTip("Editable installs run MPF straight from a source folder, e.g. a git checkout")
+
+        # The following sets up the github branch picker, showing where mpf-manager will keep the checkout
+        self.githubBranch = QComboBox()
+        self.githubBranch.setToolTip("dev is the newest development version, x branches are release lines")
+        self.githubBranch.currentIndexChanged.connect(self._readGitHubSource)
+        self.githubLocation = QLabel()
+        self.githubLocation.setWordWrap(True)
+
+        # The following sets up the local editable source folder picker
+        self.editableSourceEdit = QLineEdit(
+            venvObject.editableMPFPath if venvObject and not venvObject.editableMPFRef else ""
+        )
+        self.editableSourceEdit.setPlaceholderText("Folder containing an MPF checkout (has mpf/_version.py)")
+        self.editableSourceEdit.textChanged.connect(self._readEditableSource)
+        self.editableSourceRow = _browseWidget(self.editableSourceEdit, self, "MPF source folder")
 
         # The following sets up a mpf combination box
         self.dialogMPFVersion = QComboBox()
@@ -149,8 +178,12 @@ class VENVManagementDialog(QDialog):
         self.operationStatus.setWordWrap(True)
 
         # The following creates a dialog form to submit as part of dialog box
-        dialogForm = QFormLayout()
+        self.dialogForm = dialogForm = QFormLayout()
         dialogForm.addRow("Name:", self.venvDialogName)
+        dialogForm.addRow("Source:", self.sourceChoice)
+        dialogForm.addRow("MPF branch:", self.githubBranch)
+        dialogForm.addRow("Clones into:", self.githubLocation)
+        dialogForm.addRow("MPF source:", self.editableSourceRow)
         dialogForm.addRow("MPF version:", self.dialogMPFVersion)
         dialogForm.addRow("", self.preReleaseCheckbox)
 
@@ -188,6 +221,16 @@ class VENVManagementDialog(QDialog):
         dialogWidgetLayout.addWidget(self.operationStatus)
         dialogWidgetLayout.addWidget(self.dialogButtons)
 
+        # The following starts on the source the environment already uses
+        startingSource = "pypi"
+        if venvObject is not None and venvObject.editableMPFRef:
+            startingSource = "github"
+        elif venvObject is not None and venvObject.isEditable:
+            startingSource = "local"
+        self.sourceChoice.setCurrentIndex(self.sourceChoice.findData(startingSource))
+        self.sourceChoice.currentIndexChanged.connect(self._sourceWasChanged)
+        self._sourceWasChanged()
+
         self._updateVENVLocation()
         runInThread(self._loadVENV, self._venvLoaded, self._venvLoadFailed)
 
@@ -214,11 +257,139 @@ class VENVManagementDialog(QDialog):
     def _venvLoadFailed(self, errorMessage: str) -> None:
         self.operationStatus.setText(f"Could not load releases from PyPI: {errorMessage}")
 
+    # Editable source handling
+
+    # The following returns true when mpf will be installed in editable mode (from github or a local folder)
+    def _isEditable(self) -> bool:
+        return self.sourceChoice.currentData() in ("github", "local")
+
+    # The following returns true when mpf will be cloned from a github branch
+    def _isGitHub(self) -> bool:
+        return self.sourceChoice.currentData() == "github"
+
+    # The following shows the rows for the chosen source and swaps the version list when the source changes
+    def _sourceWasChanged(self) -> None:
+        editable = self._isEditable()
+        self.dialogForm.setRowVisible(self.githubBranch, self._isGitHub())
+        self.dialogForm.setRowVisible(self.githubLocation, self._isGitHub())
+        self.dialogForm.setRowVisible(self.editableSourceRow, self.sourceChoice.currentData() == "local")
+        self.dialogForm.setRowVisible(self.preReleaseCheckbox, not editable)
+        self.dialogMPFVersion.setEnabled(not editable)
+        if self._isGitHub():
+            self._loadGitHubBranches()
+        elif editable:
+            self._readEditableSource()
+        else:
+            self.localSource = None
+            self._sourceProblem = None
+            self._populateMPFVersions()
+
+    # The following reads the chosen local source folder so its version can be used
+    def _readEditableSource(self) -> None:
+        if self.sourceChoice.currentData() != "local":
+            return
+        sourceText = self.editableSourceEdit.text().strip()
+        self.localSource = None
+        self._sourceProblem = "Choose an MPF source folder." if not sourceText else None
+        if sourceText:
+            try:
+                self.localSource = sourceManager.readLocalMPFSource(Path(sourceText).expanduser())
+            except (OSError, ValueError) as sourceException:
+                self._sourceProblem = str(sourceException)
+        self._populateMPFVersions()
+
+    # The following lists mpf's branches from github the first time the github source is chosen
+    def _loadGitHubBranches(self) -> None:
+        if self._branchesRequested:
+            self._readGitHubSource()
+            return
+        self._branchesRequested = True
+        self.localSource = None
+        self._sourceProblem = "Loading MPF branches from GitHub…"
+        self._populateMPFVersions()
+        runInThread(sourceManager.listMPFBranches, self._gitHubBranchesLoaded, self._gitHubBranchesFailed)
+
+    # The following fills the branch box, starting on the branch the environment already tracks or dev
+    def _gitHubBranchesLoaded(self, branchNames: list[str]) -> None:
+        startingBranch = (self.venvObject.editableMPFRef if self.venvObject else "") or sourceManager.MPF_DEV_BRANCH
+        self.githubBranch.blockSignals(True)
+        self.githubBranch.clear()
+        for branchName in branchNames:
+            self.githubBranch.addItem(branchName, branchName)
+        self.githubBranch.setCurrentIndex(max(self.githubBranch.findData(startingBranch), 0))
+        self.githubBranch.blockSignals(False)
+        if self._isGitHub():
+            self._readGitHubSource()
+
+    # The following reports a failure to list the branches, which usually means git or the network is missing
+    def _gitHubBranchesFailed(self, errorMessage: str) -> None:
+        self._branchesRequested = False
+        self._sourceProblem = f"Could not list MPF branches from GitHub: {errorMessage}"
+        if self._isGitHub():
+            self._populateMPFVersions()
+
+    # The following returns where the chosen github branch will be cloned to
+    def _gitHubSourcePath(self) -> Path | None:
+        branchName = self.githubBranch.currentData()
+        return sourceManager.managedSourcePath(self.storageObject.homePath, branchName) if branchName else None
+
+    # The following reads the chosen branch's version from github so it can be shown before anything is cloned
+    def _readGitHubSource(self) -> None:
+        branchName, sourcePath = self.githubBranch.currentData(), self._gitHubSourcePath()
+        if not self._isGitHub() or not branchName or sourcePath is None:
+            return
+        self.githubLocation.setText(str(sourcePath))
+        self.localSource = None
+        self._sourceProblem = f"Reading {branchName} from GitHub…"
+        self._populateMPFVersions()
+
+        # The following ignores answers for a branch that is no longer selected
+        self._remoteRequest += 1
+        requestNumber = self._remoteRequest
+
+        def remoteRead(remoteSource: sourceManager.LocalMPFSource) -> None:
+            if requestNumber == self._remoteRequest and self._isGitHub():
+                self.localSource = remoteSource
+                self._sourceProblem = None
+                self._populateMPFVersions()
+
+        def remoteFailed(errorMessage: str) -> None:
+            if requestNumber == self._remoteRequest and self._isGitHub():
+                self._sourceProblem = f"Could not read {branchName} from GitHub: {errorMessage}"
+                self._populateMPFVersions()
+
+        runInThread(lambda: sourceManager.readRemoteMPFSource(branchName, sourcePath), remoteRead, remoteFailed)
+
+    # The following shows the editable source's version as the only mpf choice
+    def _populateEditableVersion(self) -> None:
+        # Add-on choices need the PyPI releases, so nothing is filled in until they have loaded
+        if not self.availableReleases:
+            self._validateVENV()
+            return
+        self.dialogMPFVersion.blockSignals(True)
+        self.dialogMPFVersion.clear()
+        if self.localSource:
+            sourceLabel = f"editable, {self.githubBranch.currentData()}" if self._isGitHub() else "editable"
+            self.dialogMPFVersion.addItem(
+                f"{self.localSource.mpfVersion}  ({sourceLabel})", self.localSource.mpfVersion
+            )
+            self.dialogMPFVersion.setCurrentIndex(0)
+        self.dialogMPFVersion.blockSignals(False)
+        self._mpfVersionWasChanged()
+
     # Updaters
 
     # The following function is called to force the MPF versions to re-populate depending
     # on pre-release status updates, and venv updates
     def _populateMPFVersions(self) -> None:
+        if self._isEditable():
+            self._populateEditableVersion()
+            return
+
+        # Nothing is filled in until PyPI has loaded, otherwise an existing environment's add-ons would be unticked
+        if not self.availableReleases:
+            self._validateVENV()
+            return
         compatibleReleases = compatibilityManager.filterPyPIReleases(
             self.availableReleases.get("mpf", []), self.preReleaseCheckbox.isChecked()
         )
@@ -249,6 +420,10 @@ class VENVManagementDialog(QDialog):
 
     # The following outputs the next release given a selected mpf version
     def _selectedRelease(self) -> compatibilityManager.PyPIRelease | None:
+        if self._isEditable():
+            if self.localSource is None:
+                return None
+            return compatibilityManager.PyPIRelease(self.localSource.mpfVersion, self.localSource.requiredPythonVersion)
         selectedVersion = self.dialogMPFVersion.currentData()
         return next(
             (release for release in self.availableReleases.get("mpf", []) if release.pypiVersion == selectedVersion),
@@ -316,7 +491,10 @@ class VENVManagementDialog(QDialog):
             return
         version, python = self.dialogMPFVersion.currentData(), self.pythonVersionDialog.currentData()
         if version and python:
-            self.venvDialogName.setText(f"mpf-{version}-py{python}")
+            sourceTag = "-editable" if self._isEditable() else ""
+            if self._isGitHub():
+                sourceTag = f"-{self.githubBranch.currentData()}"
+            self.venvDialogName.setText(f"mpf-{version}{sourceTag}-py{python}")
 
     # The following updates the location text for a virtual environment
     def _updateVENVLocation(self) -> None:
@@ -339,6 +517,22 @@ class VENVManagementDialog(QDialog):
         name = self.venvDialogName.text().strip()
         if not self.availableReleases:
             problem = ""  # still loading or failed; status label explains
+        elif self._isEditable() and self._sourceProblem:
+            problem = self._sourceProblem
+        elif self._isGitHub() and self._gitHubFolderProblem():
+            problem = self._gitHubFolderProblem()
+        elif (
+            self._isEditable()
+            and self.venvObject
+            and self.localSource
+            and not compatibilityManager.pythonSetCheck(
+                self.localSource.requiredPythonVersion, self.venvObject.installedPython
+            )
+        ):
+            problem = (
+                f"This MPF source needs Python {self.localSource.requiredPythonVersion}, "
+                f"the environment has Python {self.venvObject.installedPython}."
+            )
         elif not self.dialogMPFVersion.currentData():
             problem = "No MPF versions available."
         elif not self.pythonVersionDialog.currentData():
@@ -359,13 +553,34 @@ class VENVManagementDialog(QDialog):
         if problem is not None and self.availableReleases:
             self.operationStatus.setText(problem)
         elif self.availableReleases:
-            self.operationStatus.setText("")
+            self.operationStatus.setText(self._gitHubFolderNote())
         self.dialogButtons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(problem is None)
+
+    # The following returns a problem when the github branch's managed folder holds something other than mpf
+    def _gitHubFolderProblem(self) -> str:
+        sourcePath = self._gitHubSourcePath()
+        if sourcePath is None or sourceManager.isMPFSource(sourcePath):
+            return ""
+        if sourcePath.exists() and (not sourcePath.is_dir() or any(sourcePath.iterdir())):
+            return f"'{sourcePath}' already exists and is not an MPF source folder."
+        return ""
+
+    # The following tells the user when an existing checkout will be updated rather than cloned
+    def _gitHubFolderNote(self) -> str:
+        sourcePath = self._gitHubSourcePath()
+        if self._isGitHub() and sourcePath is not None and sourceManager.isMPFSource(sourcePath):
+            return f"The existing checkout at {sourcePath} will be updated (git pull)."
+        return ""
 
     # The following creates a skeleton virtual environment
     def plan(self) -> venvDialogData:
         mpfVersion = self.dialogMPFVersion.currentData()
-        mpfVersionRequirements = [f"mpf=={mpfVersion}"]
+
+        # An editable install gets mpf from the source folder instead of a pinned release
+        editablePath = self.localSource.sourcePath if self._isEditable() and self.localSource else None
+        branchName = self.githubBranch.currentData() if self._isGitHub() and editablePath else ""
+        sourceCommands = sourceManager.sourceCommands(editablePath, branchName) if editablePath and branchName else []
+        mpfVersionRequirements = [] if editablePath else [f"mpf=={mpfVersion}"]
         companionPackages, packagesToRemove = [], []
         for package, box in self.mpfAddOnDialogs.items():
             match = self._compatibleAddOnRelease(package) if box.isChecked() else None
@@ -382,6 +597,9 @@ class VENVManagementDialog(QDialog):
             mpfVersionRequirements=mpfVersionRequirements,
             companionPackages=companionPackages,
             packagesToRemove=packagesToRemove,
+            editableMPFPath=editablePath,
+            editableMPFRef=branchName,
+            sourceCommands=sourceCommands,
         )
 
 
@@ -409,6 +627,13 @@ class mpfProjectCreationDialog(QDialog):
         projectForm.addRow("Create in:", _browseWidget(self.projectParentFolder, self, "Choose a folder"))
         projectForm.addRow("Environment:", self.environmentPair)
 
+        # The following offers to generate a GMC godot project when the environment can run GMC
+        self.createGMCCheckBox = QCheckBox("Also create a GMC (Godot) project")
+        self.createGMCCheckBox.setToolTip("Requires an environment with MPF 0.80 or newer")
+        self.environmentPair.currentIndexChanged.connect(self._updateGMCOption)
+        projectForm.addRow("", self.createGMCCheckBox)
+        self._updateGMCOption()
+
         # The following creates the dialog buttons
         self.projectDialogbuttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -422,6 +647,13 @@ class mpfProjectCreationDialog(QDialog):
         projectDialoglayout.addWidget(self.operationStatus)
         projectDialoglayout.addWidget(self.projectDialogbuttons)
         self._validateProject()
+
+    # The following only allows a GMC project to be created alongside an environment that can run GMC
+    def _updateGMCOption(self) -> None:
+        gmcAllowed = mpfProjects.isGMCEligible(self.store.getVENVbyName(self.environmentPair.currentData()))
+        self.createGMCCheckBox.setEnabled(gmcAllowed)
+        if not gmcAllowed:
+            self.createGMCCheckBox.setChecked(False)
 
     # The following returns the path of the project
     def projectPath(self) -> Path:
@@ -441,9 +673,110 @@ class mpfProjectCreationDialog(QDialog):
         self.projectDialogbuttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problem)
 
 
+# The following class is a dialog box for generating a GMC godot project inside an MPF machine folder
+class GMCProjectDialog(QDialog):
+    """Chooses the GMC version and location for a new GMC godot project"""
+
+    # The following initializes the dialog
+    def __init__(self, project: Project, suggestedVersion: str | None, parentWidget: QWidget | None = None):
+        super().__init__(parentWidget)
+        self.project = project
+        self.suggestedVersion = suggestedVersion
+        self.setWindowTitle("Create GMC (Godot) project")
+        self.setMinimumWidth(480)
+
+        # The following sets up the version, location and import options
+        self.gmcVersion = QComboBox()
+        self.gmcVersion.currentIndexChanged.connect(self._validateGMC)
+        self.gmcLocation = QLineEdit(project.projectPath)
+        self.gmcLocation.textChanged.connect(self._validateGMC)
+        self.runImportCheckBox = QCheckBox("Import assets with Godot after creating (Godot 4.3+)")
+        self.runImportCheckBox.setToolTip("Lets the Godot editor open the new project without errors the first time")
+        self.runImportCheckBox.setChecked(True)
+        self.operationStatus = QLabel("Loading GMC versions…")
+        self.operationStatus.setWordWrap(True)
+
+        # The following creates the form for the dialog
+        gmcForm = QFormLayout()
+        gmcForm.addRow("GMC version:", self.gmcVersion)
+        gmcForm.addRow("Create in:", _browseWidget(self.gmcLocation, self, "Choose the GMC project folder"))
+        gmcForm.addRow("", self.runImportCheckBox)
+
+        # The following creates the dialog buttons
+        self.gmcDialogButtons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.gmcDialogButtons.accepted.connect(self.accept)
+        self.gmcDialogButtons.rejected.connect(self.reject)
+        self.gmcDialogButtons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+
+        # The following lays out the dialog
+        gmcLayout = QVBoxLayout(self)
+        gmcLayout.addLayout(gmcForm)
+        gmcLayout.addWidget(self.operationStatus)
+        gmcLayout.addWidget(self.gmcDialogButtons)
+
+        runInThread(gmcManager.listGMCVersions, self._versionsLoaded, self._versionsFailed)
+
+    # The following fills the version box, picking the version MPF asked for when it's available
+    def _versionsLoaded(self, gmcVersions: list[str]) -> None:
+        if self.suggestedVersion and self.suggestedVersion not in gmcVersions:
+            gmcVersions = [self.suggestedVersion, *gmcVersions]
+        self._fillVersions(gmcVersions)
+        self.operationStatus.setText("")
+        self._validateGMC()
+
+    # The following still lets the user continue with the MPF suggested version if github can't be reached
+    def _versionsFailed(self, errorMessage: str) -> None:
+        self._fillVersions([self.suggestedVersion] if self.suggestedVersion else [])
+        self._validateGMC()
+        self.operationStatus.setText(f"Could not list GMC versions: {errorMessage}")
+
+    # The following adds versions to the version box, labelling the one MPF requires
+    def _fillVersions(self, gmcVersions: list[str]) -> None:
+        self.gmcVersion.blockSignals(True)
+        self.gmcVersion.clear()
+        for gmcVersion in gmcVersions:
+            label = f"{gmcVersion}  (required by MPF)" if gmcVersion == self.suggestedVersion else gmcVersion
+            self.gmcVersion.addItem(label, gmcVersion)
+        self.gmcVersion.setCurrentIndex(max(self.gmcVersion.findData(self.suggestedVersion), 0))
+        self.gmcVersion.blockSignals(False)
+
+    # The following returns the folder the godot project will be created in
+    def gmcProjectPath(self) -> Path:
+        return Path(self.gmcLocation.text().strip()).expanduser()
+
+    # The following validates the dialog, warning when godot won't be able to see the mpf mode folders
+    def _validateGMC(self) -> None:
+        problem = ""
+        if not self.gmcVersion.currentData():
+            problem = "Choose a GMC version."
+        elif not self.gmcLocation.text().strip():
+            problem = "Choose a folder for the GMC project."
+        elif (self.gmcProjectPath() / "project.godot").exists():
+            problem = "That folder already contains a Godot project."
+        elif (self.gmcProjectPath() / gmcManager.GMC_ADDON_RELATIVE).exists():
+            problem = "That folder already contains addons/mpf-gmc."
+
+        if problem:
+            self.operationStatus.setText(problem)
+        elif self.gmcProjectPath().resolve() != Path(self.project.projectPath).resolve():
+            self.operationStatus.setText(
+                "Note: outside of the machine folder GMC won't find slides in modes/<mode>/slides."
+            )
+        else:
+            self.operationStatus.setText("")
+        self.gmcDialogButtons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problem)
+
+
 # The following class sets up the dialog box for settings
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, parentWidget: QWidget | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        parentWidget: QWidget | None = None,
+        runProfiles: list[RunProfile] | None = None,
+    ):
         super().__init__(parentWidget)
         self.setWindowTitle("MPF-Manager Settings")
         self.setMinimumWidth(480)
@@ -474,6 +807,23 @@ class SettingsDialog(QDialog):
         # ...existing rows...
         settingsForm.addRow("Godot executable:", godotRow)
 
+        # The following sets up running a saved run profile when mpf-manager starts
+        self.startupProfileCheckBox = QCheckBox("Run a profile when MPF-Manager starts")
+        self.startupProfileOption = QComboBox()
+        for profile in runProfiles or []:
+            self.startupProfileOption.addItem(profile.profileName, profile.profileName)
+        hasProfiles = self.startupProfileOption.count() > 0
+        startupIndex = self.startupProfileOption.findData(settings.startupRunProfile)
+        self.startupProfileOption.setCurrentIndex(max(startupIndex, 0))
+        self.startupProfileCheckBox.setChecked(hasProfiles and settings.runProfileAtStartup and startupIndex >= 0)
+        self.startupProfileCheckBox.setEnabled(hasProfiles)
+        if not hasProfiles:
+            self.startupProfileCheckBox.setToolTip("Save a run profile from the MPF Projects tab first")
+        self.startupProfileCheckBox.toggled.connect(self.startupProfileOption.setEnabled)
+        self.startupProfileOption.setEnabled(self.startupProfileCheckBox.isChecked())
+        settingsForm.addRow("", self.startupProfileCheckBox)
+        settingsForm.addRow("Startup profile:", self.startupProfileOption)
+
         # The following configures the dialog buttons for settings
         settingsDialogbuttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -499,6 +849,9 @@ class SettingsDialog(QDialog):
         settings.projectDirectory = self.projectDirectoryDialog.text().strip()
         settings.includePreReleases = self.preReleasesCheckBox.isChecked()
         settings.godotExecutablePath = self.godotExecutableDialog.text().strip()
+        startupProfileName = self.startupProfileOption.currentData()
+        settings.runProfileAtStartup = self.startupProfileCheckBox.isChecked() and bool(startupProfileName)
+        settings.startupRunProfile = startupProfileName if settings.runProfileAtStartup else ""
 
 
 # The following creates a callable combo box to display the installed environment pairings

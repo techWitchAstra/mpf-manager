@@ -16,6 +16,8 @@ import shutil
 from pathlib import Path
 from typing import cast
 
+from packaging.version import Version
+
 # The following imports the used Qt assets for Main Window
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase, QStandardItemModel
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -41,10 +44,12 @@ from PySide6.QtWidgets import (
 )
 
 # The following imports the needed parts of the application from other files
+from mpfmanager.core import compatibilityManager, gmcManager, sourceManager
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
-from mpfmanager.core.storageManager import Project, StorageProcessor, VirtualEnvironment
+from mpfmanager.core.storageManager import Project, RunProfile, StorageProcessor, VirtualEnvironment
 from mpfmanager.ui.dialogs import (
+    GMCProjectDialog,
     SettingsDialog,
     VENVManagementDialog,
     environmentPairing,
@@ -158,13 +163,30 @@ class MainWindow(QMainWindow):
             )
         )
 
+        # The following creates a button that opens the mpf source folder of an editable environment
+        self.openSourceButton = QPushButton("Open MPF Source Folder")
+        self.openSourceButton.setToolTip("Opens the local MPF source folder an editable environment runs from")
+        self.openSourceButton.clicked.connect(
+            lambda: (
+                (selectedEnvironment := self.selectedEnvironment())
+                and selectedEnvironment.isEditable
+                and _openMPFmachineFolder(Path(selectedEnvironment.editableMPFPath))
+            )
+        )
+
         # The following creates a button to delete a selected virtual environment
         self.deleteVENVButton = QPushButton("Delete…")
         self.deleteVENVButton.clicked.connect(self.deleteVENV)
 
         # The following creates a box to hold the buttons related to virtualEnvironments
         venvButtons = QHBoxLayout()
-        for currentButton in (self.newVENVButton, self.changeVENVButton, self.verifyVENVButton, self.openVENVButton):
+        for currentButton in (
+            self.newVENVButton,
+            self.changeVENVButton,
+            self.verifyVENVButton,
+            self.openVENVButton,
+            self.openSourceButton,
+        ):
             venvButtons.addWidget(currentButton)
         venvButtons.addStretch()
         venvButtons.addWidget(self.deleteVENVButton)
@@ -198,13 +220,23 @@ class MainWindow(QMainWindow):
             lambda: (p := self.selectedProject()) and _openMPFmachineFolder(Path(p.projectPath))
         )
 
+        # The following adds a button to generate a GMC godot project for the selected project
+        self.createGMCButton = QPushButton("Create GMC project…")
+        self.createGMCButton.setToolTip("Generate a blank Godot project with mpf-gmc configured in the machine folder")
+        self.createGMCButton.clicked.connect(lambda: self.createGMCProject())
+
         # The following adds a button to remove a mpf project from the list
         self.removeProjectButton = QPushButton("Remove from list")
         self.removeProjectButton.clicked.connect(self.removeProject)
 
         # The following sets up a layout for the project management buttons
         projectManagementButtonBar = QHBoxLayout()
-        for currentButton in (self.newprojectButton, self.addProjectButton, self.openProjectFolderButton):
+        for currentButton in (
+            self.newprojectButton,
+            self.addProjectButton,
+            self.openProjectFolderButton,
+            self.createGMCButton,
+        ):
             projectManagementButtonBar.addWidget(currentButton)
         projectManagementButtonBar.addStretch()
         projectManagementButtonBar.addWidget(self.removeProjectButton)
@@ -259,12 +291,52 @@ class MainWindow(QMainWindow):
         runConfigurationLayout.addWidget(self.runMPFButton)
         runConfigurationLayout.addWidget(self.stopMPFButton)
 
+        # The following sets up the list of saved run profiles
+        self.runProfileOption = QComboBox()
+        self.runProfileOption.setMinimumWidth(220)
+        self.runProfileOption.currentIndexChanged.connect(self._updateButtons)
+
+        # The following adds a button to run the chosen run profile
+        self.runProfileButton = QPushButton("Run profile")
+        self.runProfileButton.clicked.connect(lambda: self.runRunProfile(self.selectedRunProfile()))
+
+        # The following adds a button to save the selected project and the run options above as a run profile
+        self.saveRunProfileButton = QPushButton("Save as profile…")
+        self.saveRunProfileButton.setToolTip("Save the selected project and the run options above as a run profile")
+        self.saveRunProfileButton.clicked.connect(self.saveRunProfile)
+
+        # The following adds a button to put a run profile's project and options back into the run options
+        self.loadRunProfileButton = QPushButton("Load into options")
+        self.loadRunProfileButton.setToolTip("Select the profile's project and set the run options above to match it")
+        self.loadRunProfileButton.clicked.connect(lambda: self.loadRunProfile(self.selectedRunProfile()))
+
+        # The following adds a button to delete the chosen run profile
+        self.deleteRunProfileButton = QPushButton("Delete profile")
+        self.deleteRunProfileButton.clicked.connect(self.deleteRunProfile)
+
+        # The following lets the chosen run profile be run when mpf-manager starts
+        self.runAtStartupCheckBox = QCheckBox("Run at startup")
+        self.runAtStartupCheckBox.setToolTip("Run this profile automatically when MPF-Manager starts")
+        self.runAtStartupCheckBox.toggled.connect(self._setRunAtStartup)
+
+        # The following lays out the run profile controls
+        runProfileLayout = QHBoxLayout()
+        runProfileLayout.addWidget(QLabel("Run profile:"))
+        runProfileLayout.addWidget(self.runProfileOption, 1)
+        runProfileLayout.addWidget(self.runProfileButton)
+        runProfileLayout.addWidget(self.loadRunProfileButton)
+        runProfileLayout.addWidget(self.saveRunProfileButton)
+        runProfileLayout.addWidget(self.runAtStartupCheckBox)
+        runProfileLayout.addStretch()
+        runProfileLayout.addWidget(self.deleteRunProfileButton)
+
         # The following puts all the project tab elements together
         projectTabPage = QWidget()
         projectTabLayout = QVBoxLayout(projectTabPage)
         projectTabLayout.addWidget(self.projectListTable)
         projectTabLayout.addLayout(projectManagementButtonBar)
         projectTabLayout.addLayout(runConfigurationLayout)
+        projectTabLayout.addLayout(runProfileLayout)
 
         self._updateRunOptions()
 
@@ -296,6 +368,19 @@ class MainWindow(QMainWindow):
             return None
         return self.storedData.getProjectbyPath(selectedProjectItem.data(Qt.ItemDataRole.UserRole))
 
+    # The following outputs the chosen run profile
+    def selectedRunProfile(self) -> RunProfile | None:
+        return self.storedData.getRunProfileByName(self.runProfileOption.currentData())
+
+    # The following selects a project's row in the project table
+    def _selectProjectRow(self, projectPath: str) -> bool:
+        for row in range(self.projectListTable.rowCount()):
+            projectItem = self.projectListTable.item(row, 0)
+            if projectItem is not None and projectItem.data(Qt.ItemDataRole.UserRole) == projectPath:
+                self.projectListTable.selectRow(row)
+                return True
+        return False
+
     # The following refreshes the main Window
     def refreshMainWindow(self) -> None:
 
@@ -306,7 +391,17 @@ class MainWindow(QMainWindow):
             row = self.venvAvailableTable.rowCount()
             self.venvAvailableTable.insertRow(row)
             self.venvAvailableTable.setItem(row, 0, _item(environment.venvName, environment.venvName))
-            self.venvAvailableTable.setItem(row, 1, _item(environment.installedMPFVersion))
+            if environment.editableMPFRef:
+                mpfVersionItem = _item(f"{environment.installedMPFVersion}  (editable, {environment.editableMPFRef})")
+                mpfVersionItem.setToolTip(
+                    f"Tracks {environment.editableMPFRef} from GitHub, source at {environment.editableMPFPath}"
+                )
+            elif environment.isEditable:
+                mpfVersionItem = _item(f"{environment.installedMPFVersion}  (editable)")
+                mpfVersionItem.setToolTip(f"Installed in editable mode from {environment.editableMPFPath}")
+            else:
+                mpfVersionItem = _item(environment.installedMPFVersion)
+            self.venvAvailableTable.setItem(row, 1, mpfVersionItem)
             self.venvAvailableTable.setItem(row, 2, _item(environment.installedPython))
             self.venvAvailableTable.setItem(row, 3, _item(", ".join(environment.additionalPackages)))
             self.venvAvailableTable.setItem(row, 4, _item("OK" if environment.exists else "Missing"))
@@ -343,7 +438,31 @@ class MainWindow(QMainWindow):
             self.projectListTable.setItem(row, 4, _item(projectTableItem.projectPath))
             if selectedProject and projectTableItem.projectPath == selectedProject.projectPath:
                 self.projectListTable.selectRow(row)
+
+        # The following updates the run profile list, keeping the chosen profile chosen
+        chosenProfileName = self.runProfileOption.currentData()
+        self.runProfileOption.blockSignals(True)
+        self.runProfileOption.clear()
+        for profile in self.storedData.runProfileList:
+            self.runProfileOption.addItem(self._runProfileLabel(profile), profile.profileName)
+        self.runProfileOption.setCurrentIndex(max(self.runProfileOption.findData(chosenProfileName), 0))
+        self.runProfileOption.blockSignals(False)
         self._updateButtons()
+
+    # The following describes a run profile for the run profile list
+    def _runProfileLabel(self, profile: RunProfile) -> str:
+        project = self.storedData.getProjectbyPath(profile.projectPath)
+        projectName = project.projectName if project else "missing project"
+        modeLabel = next(
+            (label for label, mode in mpfProjects.RUN_MODES.items() if mode == profile.runMode), profile.runMode
+        )
+        startupText = (
+            "  [startup]"
+            if self.storedData.settings.runProfileAtStartup
+            and self.storedData.settings.startupRunProfile == profile.profileName
+            else ""
+        )
+        return f"{profile.profileName}  ({projectName}, {modeLabel}){startupText}"
 
     # The Following updates the button States
     def _updateButtons(self) -> None:
@@ -354,6 +473,7 @@ class MainWindow(QMainWindow):
             b.setEnabled(idle and environment is not None and environment.exists)
         self.deleteVENVButton.setEnabled(idle and environment is not None)
         self.openVENVButton.setEnabled(environment is not None and environment.exists)
+        self.openSourceButton.setEnabled(environment is not None and environment.isEditable)
 
         projectTableItem = self.selectedProject()
         running = projectTableItem is not None and projectTableItem.projectPath in self.runningProcesses
@@ -361,10 +481,37 @@ class MainWindow(QMainWindow):
         self.removeProjectButton.setEnabled(projectTableItem is not None and not running)
         self.runMPFButton.setEnabled(projectTableItem is not None and not running)
         self.stopMPFButton.setEnabled(running)
+        projectEnvironment = (
+            self.storedData.getVENVbyName(projectTableItem.virtualEnvironment) if projectTableItem else None
+        )
+        self.createGMCButton.setEnabled(idle and mpfProjects.isGMCEligible(projectEnvironment))
+
+        # The following updates the run profile controls for the chosen profile
+        runProfile = self.selectedRunProfile()
+        profileRunning = runProfile is not None and runProfile.projectPath in self.runningProcesses
+        self.runProfileButton.setEnabled(runProfile is not None and not profileRunning)
+        self.loadRunProfileButton.setEnabled(runProfile is not None)
+        self.deleteRunProfileButton.setEnabled(runProfile is not None)
+        self.saveRunProfileButton.setEnabled(projectTableItem is not None)
+        self.runAtStartupCheckBox.setEnabled(runProfile is not None)
+        self.runAtStartupCheckBox.blockSignals(True)
+        self.runAtStartupCheckBox.setChecked(runProfile is not None and self.storedData.startupProfile() is runProfile)
+        self.runAtStartupCheckBox.blockSignals(False)
 
     # The following sets the project environment
     def _setProjectEnvironment(self, path: str, env_name: str | None) -> None:
         self.storedData.setProjectVENV(path, env_name)
+
+        # The following keeps the GMC project's gmc.cfg pointed at the newly chosen environment's mpf
+        project = self.storedData.getProjectbyPath(path)
+        gmcFolder = (project.gmcFolderPath or mpfProjects.findGodotProject(Path(path))) if project else None
+        if gmcFolder:
+            environment = self.storedData.getVENVbyName(env_name)
+            try:
+                gmcManager.updateGMCExecutable(Path(gmcFolder), environment.executable("mpf") if environment else None)
+            except OSError as exc:
+                self.outputLogger(f"Could not update gmc.cfg: {exc}")
+        self._updateButtons()
 
         # The following enables only the run options that the selected project's environment supports
 
@@ -433,7 +580,7 @@ class MainWindow(QMainWindow):
             if folder != self.storedData.settings.venvDirectory:
                 self.storedData.settings.venvDirectory = folder
                 self.storedData.saveConfiguration()
-            self._applyPlan(dialog.plan(), create=True)
+            self._applyDialogPlan(dialog, create=True)
 
     # The following changes the MPF related to a selected VENV
     def changeVENVmpf(self) -> None:
@@ -442,20 +589,38 @@ class MainWindow(QMainWindow):
             return
         dialog = VENVManagementDialog(self.storedData, self, environment)
         if dialog.exec():
-            self._applyPlan(dialog.plan(), create=False)
+            self._applyDialogPlan(dialog, create=False)
+
+    # The following builds the plan from an accepted dialog, reporting problems such as git being missing
+    def _applyDialogPlan(self, dialog: VENVManagementDialog, create: bool) -> None:
+        try:
+            plannedVENV = dialog.plan()
+        except OSError as planException:
+            self._error(str(planException))
+            return
+        self._applyPlan(plannedVENV, create)
 
     # The following attempts to create a venv based on the plan via a dialog
     def _applyPlan(self, plannedVENV: venvDialogData, create: bool) -> None:
         try:
-            commandList = []
+            # A github source is cloned (or updated) first, so a failed clone leaves no half made environment
+            commandList = list(plannedVENV.sourceCommands)
             if create:
                 commandList.append(uvCMDs.setupVENV(plannedVENV.venvPath, plannedVENV.pythonVersion))
             if plannedVENV.packagesToRemove:
                 commandList.append(uvCMDs.uninstallVENVPackages(plannedVENV.venvPath, plannedVENV.packagesToRemove))
-            commandList.append(uvCMDs.installVENVPackages(plannedVENV.venvPath, plannedVENV.mpfVersionRequirements))
+            commandList.append(
+                uvCMDs.installVENVPackages(
+                    plannedVENV.venvPath,
+                    plannedVENV.mpfVersionRequirements,
+                    [plannedVENV.editableMPFPath] if plannedVENV.editableMPFPath else None,
+                )
+            )
         except uvCMDs.UvNotFoundError as exc:
             self._error(str(exc))
             return
+
+        editablePath = str(plannedVENV.editableMPFPath or "")
 
         # Function to be called when virtual environment creation is attempted
         def done(ok: bool) -> None:
@@ -473,6 +638,8 @@ class MainWindow(QMainWindow):
                         plannedVENV.pythonVersion,
                         plannedVENV.mpfVersion,
                         plannedVENV.companionPackages,
+                        editablePath,
+                        plannedVENV.editableMPFRef,
                     )
                 )
             else:
@@ -484,8 +651,13 @@ class MainWindow(QMainWindow):
                     plannedVENV.mpfVersion,
                     plannedVENV.companionPackages,
                 )
+                environment.editableMPFPath = editablePath
+                environment.editableMPFRef = plannedVENV.editableMPFRef
                 self.storedData.saveConfiguration()
-            self.outputLogger(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}.")
+            sourceText = f" (editable from {editablePath})" if editablePath else ""
+            if plannedVENV.editableMPFRef:
+                sourceText = f" (editable, {plannedVENV.editableMPFRef} from GitHub at {editablePath})"
+            self.outputLogger(f"Environment '{plannedVENV.venvName}' now has MPF {plannedVENV.mpfVersion}{sourceText}.")
             self.refreshMainWindow()
 
         self.commandQueue.run(commandList, done)
@@ -503,6 +675,26 @@ class MainWindow(QMainWindow):
             if not version:
                 self.outputLogger(f"mpf is not installed in '{environment.venvName}'.")
                 return
+
+            # An editable install's version comes from its source folder, which may have changed since installing
+            if environment.isEditable:
+                try:
+                    localSource = sourceManager.readLocalMPFSource(Path(environment.editableMPFPath))
+                except (OSError, ValueError) as sourceException:
+                    self.outputLogger(f"Could not read the MPF source folder: {sourceException}")
+                else:
+                    version = localSource.mpfVersion
+                    if not compatibilityManager.pythonSetCheck(
+                        localSource.requiredPythonVersion, environment.installedPython
+                    ):
+                        self.outputLogger(
+                            f"Warning: the MPF source now needs Python {localSource.requiredPythonVersion}, "
+                            f"'{environment.venvName}' has Python {environment.installedPython}."
+                        )
+                    self.outputLogger(
+                        "Code changes in the source folder are picked up automatically; if its dependencies "
+                        "changed, re-apply it with 'Change MPF version…'."
+                    )
             environment.installedMPFVersion = version
             environment.additionalPackages = [
                 package for package in environment.additionalPackages if package in packages
@@ -533,6 +725,8 @@ class MainWindow(QMainWindow):
         # The following warns about deletion and which projects currently run using that Environment
         if projectsUsingVENV:
             warningText += "\n\nUsed by: " + ", ".join(projectsUsingVENV)
+        if environmentToDelete.isEditable:
+            warningText += f"\n\nThe MPF source folder will be kept:\n{environmentToDelete.editableMPFPath}"
         if QMessageBox.question(self, "Delete environment", warningText) != QMessageBox.StandardButton.Yes:
             return
         if environmentToDelete.exists:
@@ -565,6 +759,82 @@ class MainWindow(QMainWindow):
         self.outputLogger(f"Created MPF project at {newProjectPath}")
         self.tabs.setCurrentIndex(1)
         self.refreshMainWindow()
+        if newProjectDialog.createGMCCheckBox.isChecked() and (
+            newProject := self.storedData.getProjectbyPath(str(newProjectPath))
+        ):
+            self.createGMCProject(newProject)
+
+    # The following generates a GMC godot project for a project (the selected one by default)
+    def createGMCProject(self, project: Project | None = None) -> None:
+        project = project or self.selectedProject()
+        environment = self.storedData.getVENVbyName(project.virtualEnvironment) if project else None
+        if not project or not environment:
+            return
+        if not mpfProjects.isGMCEligible(environment):
+            self._error(
+                f"GMC requires MPF 0.80 or newer, '{environment.venvName}' has MPF {environment.installedMPFVersion}."
+            )
+            return
+        if existingGodotProject := mpfProjects.findGodotProject(Path(project.projectPath)):
+            self._error(f"This machine folder already has a Godot project at {existingGodotProject}.")
+            return
+
+        # The following shows the dialog once MPF has said which GMC version it wants
+        def versionKnown(suggestedVersion: str | None) -> None:
+            dialog = GMCProjectDialog(project, suggestedVersion, self)
+            if not dialog.exec():
+                return
+            gmcVersion: str | None = dialog.gmcVersion.currentData()
+            if not gmcVersion:
+                return
+            gmcPath = dialog.gmcProjectPath()
+            runImport = dialog.runImportCheckBox.isChecked()
+            godotExecutable = self.storedData.settings.godotExecutablePath
+            cachePath = self.storedData.gmcCachePath
+            self.outputLogger(f"Fetching mpf-gmc {gmcVersion}…")
+
+            # The following downloads the addon and writes the project off of the GUI thread
+            def build() -> tuple[Path, Version | None]:
+                addonSource = gmcManager.fetchGMCAddon(gmcVersion, cachePath)
+                detectedGodot = (
+                    gmcManager.godotVersion(godotExecutable)
+                    if mpfProjects.checkGodotExecutable(godotExecutable)
+                    else None
+                )
+                godotFeature = (
+                    f"{detectedGodot.major}.{detectedGodot.minor}"
+                    if detectedGodot
+                    else gmcManager.GODOT_DEFAULT_FEATURE
+                )
+                gmcManager.createGMCProject(
+                    gmcPath, project.projectName, addonSource, godotFeature, environment.executable("mpf")
+                )
+                return gmcPath, detectedGodot
+
+            # The following records the new GMC project and optionally imports it with godot
+            def built(result: tuple[Path, Version | None]) -> None:
+                createdPath, detectedGodot = result
+                self.storedData.setProjectGMCPath(project.projectPath, str(createdPath))
+                self.outputLogger(f"Created GMC {gmcVersion} project at {createdPath}")
+                self.refreshMainWindow()
+                if not runImport:
+                    return
+                if detectedGodot is None or detectedGodot < gmcManager.GODOT_IMPORT_MIN_VERSION:
+                    self.outputLogger(
+                        "Skipped the asset import: set Godot 4.3 or newer in File → Settings, "
+                        "or open the project once in the Godot editor."
+                    )
+                elif self.commandQueue.isBusy:
+                    self.outputLogger("Skipped the asset import because another operation is running.")
+                else:
+                    self.commandQueue.run([gmcManager.importGMCProject(godotExecutable, createdPath)])
+
+            runInThread(build, built, lambda message: self._error(f"Could not create the GMC project: {message}"))
+
+        self.outputLogger(f"Checking which GMC version '{environment.venvName}' needs…")
+        runInThread(
+            lambda: gmcManager.requiredGMCVersion(environment), versionKnown, lambda _message: versionKnown(None)
+        )
 
     # The following is used to create an existing MPF machine by directory
     def addExistingProject(self) -> None:
@@ -599,26 +869,146 @@ class MainWindow(QMainWindow):
             self.outputLogger(f"Removed '{projectToRemove.projectName}' from the list (files were not deleted).")
             self.refreshMainWindow()
 
-    # The following is used to run a mpf project
+    # The following collects the run options currently shown in the projects tab into a run profile
+    def currentRunOptions(self, project: Project, profileName: str = "") -> RunProfile:
+        return RunProfile(
+            profileName=profileName,
+            projectPath=project.projectPath,
+            runMode=self.runModeOption.currentData(),
+            hardwareArguments=list(self.hardwareOption.currentData()),
+            noMediaController=self.runMediaControllerOption.isEnabled() and self.runMediaControllerOption.isChecked(),
+            runMonitor=self.runMPFMonitorCheckBox.isEnabled() and self.runMPFMonitorCheckBox.isChecked(),
+            openGodotEditor=self.openGodotEditorCheckBox.isEnabled() and self.openGodotEditorCheckBox.isChecked(),
+            extraArguments=self.extraRunArguments.text(),
+        )
+
+    # The following is used to run the selected mpf project with the options shown in the projects tab
     def runMPFProject(self) -> None:
         projectToRun = self.selectedProject()
+        if projectToRun:
+            self._runProject(projectToRun, self.currentRunOptions(projectToRun))
+
+    # The following runs a saved run profile
+    def runRunProfile(self, profile: RunProfile | None) -> None:
+        if profile is None:
+            return
+        projectToRun = self.storedData.getProjectbyPath(profile.projectPath)
+        if projectToRun is None:
+            self._error(f"The project for run profile '{profile.profileName}' is no longer in the project list.")
+            return
+        if projectToRun.projectPath in self.runningProcesses:
+            self._error(f"'{projectToRun.projectName}' is already running.")
+            return
+        self.outputLogger(f"Running profile '{profile.profileName}'…")
+        self._runProject(projectToRun, profile)
+
+    # The following runs the run profile chosen to run at startup, if running one at startup is enabled
+    def runStartupProfile(self) -> None:
+        settings = self.storedData.settings
+        if not settings.runProfileAtStartup:
+            return
+        profile = self.storedData.startupProfile()
+        if profile is None:
+            self.outputLogger(f"The startup run profile '{settings.startupRunProfile}' no longer exists.")
+            return
+        self.tabs.setCurrentIndex(1)
+        self._selectProjectRow(profile.projectPath)
+        self.runProfileOption.setCurrentIndex(max(self.runProfileOption.findData(profile.profileName), 0))
+        self.runRunProfile(profile)
+
+    # The following saves the selected project and the run options shown as a run profile
+    def saveRunProfile(self) -> None:
+        project = self.selectedProject()
+        if project is None:
+            return
+        chosenProfile = self.selectedRunProfile()
+        suggestedName = (
+            chosenProfile.profileName
+            if chosenProfile and chosenProfile.projectPath == project.projectPath
+            else f"{project.projectName} - {self.runModeOption.currentText()}"
+        )
+        profileName, accepted = QInputDialog.getText(self, "Save run profile", "Profile name:", text=suggestedName)
+        profileName = profileName.strip()
+        if not accepted or not profileName:
+            return
+        if (
+            self.storedData.getRunProfileByName(profileName)
+            and QMessageBox.question(self, "Save run profile", f"Replace the run profile '{profileName}'?")
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            self.storedData.saveRunProfile(self.currentRunOptions(project, profileName))
+        except ValueError as exc:
+            self._error(str(exc))
+            return
+        self.outputLogger(f"Saved run profile '{profileName}'.")
+        self.refreshMainWindow()
+        self.runProfileOption.setCurrentIndex(self.runProfileOption.findData(profileName))
+
+    # The following selects a run profile's project and sets the run options to match the profile
+    def loadRunProfile(self, profile: RunProfile | None) -> None:
+        if profile is None:
+            return
+        if not self._selectProjectRow(profile.projectPath):
+            self._error(f"The project for run profile '{profile.profileName}' is no longer in the project list.")
+            return
+        modeIndex = self.runModeOption.findData(profile.runMode)
+        if modeIndex >= 0:
+            self.runModeOption.setCurrentIndex(modeIndex)
+        for index in range(self.hardwareOption.count()):
+            if self.hardwareOption.itemData(index) == profile.hardwareArguments:
+                self.hardwareOption.setCurrentIndex(index)
+        self.runMediaControllerOption.setChecked(profile.noMediaController)
+        self.runMPFMonitorCheckBox.setChecked(profile.runMonitor)
+        self.openGodotEditorCheckBox.setChecked(profile.openGodotEditor)
+        self.extraRunArguments.setText(profile.extraArguments)
+        self._updateRunOptions()
+
+    # The following deletes the chosen run profile
+    def deleteRunProfile(self) -> None:
+        profile = self.selectedRunProfile()
+        if profile is None:
+            return
+        if (
+            QMessageBox.question(self, "Delete run profile", f"Delete the run profile '{profile.profileName}'?")
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self.storedData.removeRunProfile(profile.profileName)
+        self.outputLogger(f"Deleted run profile '{profile.profileName}'.")
+        self.refreshMainWindow()
+
+    # The following enables or disables running the chosen run profile at startup
+    def _setRunAtStartup(self, enabled: bool) -> None:
+        profile = self.selectedRunProfile()
+        if profile is None:
+            return
+        if enabled:
+            self.storedData.setStartupRunProfile(profile.profileName)
+            self.outputLogger(f"'{profile.profileName}' will run when MPF-Manager starts.")
+        elif self.storedData.startupProfile() is profile:
+            self.storedData.setStartupRunProfile(None)
+            self.outputLogger("No run profile will run when MPF-Manager starts.")
+        self.refreshMainWindow()
+
+    # The following runs a project using the given run options
+    def _runProject(self, projectToRun: Project, runOptions: RunProfile) -> None:
 
         # The following catches situations where a project or environment are not
         # setup properly
-        if not projectToRun:
-            return
         environment = self.storedData.getVENVbyName(projectToRun.virtualEnvironment)
         if not environment:
             self._error("Choose an environment for this project first.")
             return
-        mpfRunMode = self.runModeOption.currentData()
+        mpfRunMode = runOptions.runMode
         if mpfRunMode in ("both", "mc") and "mpf-mc" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-mc installed.")
             return
         if mpfRunMode == "monitor" and "mpf-monitor" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
-        if self.runMPFMonitorCheckBox.isChecked() and "mpf-monitor" not in environment.additionalPackages:
+        if runOptions.runMonitor and "mpf-monitor" not in environment.additionalPackages:
             self._error(f"'{environment.venvName}' does not have mpf-monitor installed.")
             return
         gmcCommand: list[str] | None = None
@@ -636,9 +1026,7 @@ class MainWindow(QMainWindow):
             gmcFolderPath = self._resolveGMCPath(projectToRun)
             if gmcFolderPath is None:
                 return
-            gmcCommand = mpfProjects.runGMC(
-                godotExecutablePath, gmcFolderPath, self.openGodotEditorCheckBox.isChecked()
-            )
+            gmcCommand = mpfProjects.runGMC(godotExecutablePath, gmcFolderPath, runOptions.openGodotEditor)
 
         # GMC only needs godot, MPF is assumed to already be running elsewhere (or not needed for editing)
         if mpfRunMode == "gmconly" and gmcCommand and gmcFolderPath:
@@ -651,21 +1039,21 @@ class MainWindow(QMainWindow):
 
         # The following catches exceptions related to extra arguments
         try:
-            extraArguments = shlex.split(self.extraRunArguments.text())
+            extraArguments = shlex.split(runOptions.extraArguments)
         except ValueError as argumentException:
             self._error(f"Invalid extra arguments: {argumentException}")
             return
 
-        if mpfRunMode == "game" and self.runMediaControllerOption.isChecked():
+        if mpfRunMode == "game" and runOptions.noMediaController:
             extraArguments.insert(0, "-b")
 
             # The following sets up the commands for the game and, if requested, the monitor
         runCommands = mpfProjects.runMPFWithMonitor(
             environment,
             mpfRunMode,
-            self.hardwareOption.currentData(),
+            runOptions.hardwareArguments,
             extraArguments,
-            self.runMPFMonitorCheckBox.isChecked(),
+            runOptions.runMonitor,
         )
 
         # The following starts the game, and schedules the monitor to start once the game has had time to start up
@@ -718,10 +1106,11 @@ class MainWindow(QMainWindow):
 
     # The following is used to edit the settings of the application
     def edit_settings(self) -> None:
-        settingsDialog = SettingsDialog(self.storedData.settings, self)
+        settingsDialog = SettingsDialog(self.storedData.settings, self, self.storedData.runProfileList)
         if settingsDialog.exec():
             settingsDialog.applySettings(self.storedData.settings)
             self.storedData.saveConfiguration()
+            self.refreshMainWindow()
 
     # The following is used to close the application
     def closeEvent(self, closeEvent) -> None:  # noqa: N802 - Qt override
@@ -738,7 +1127,6 @@ class MainWindow(QMainWindow):
         self, project: Project, command: list[str], label: str, workingPath: Path | None = None
     ) -> RunningProcess:
         process = RunningProcess(command, workingPath or Path(project.projectPath), self)
-        process = RunningProcess(command, Path(project.projectPath), self)
         process.outputSignal.connect(
             lambda text, name=project.projectName, tag=label: self.outputLogger(f"[{name}/{tag}] {text}")
         )

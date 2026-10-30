@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QProcess, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QProcess, QRunnable, QThreadPool, QTimer, Signal, Slot
 
 
 # The following creates a Command Queue class for queueing commands
@@ -32,12 +32,20 @@ class CommandQueue(QObject):
         super().__init__(parent)
         self._pendingCommands: list[list[str]] = []
         self._onDone: Callable[[bool], None] | None = None
-        self._process: QProcess | None = None
+        self._running = False
+
+        # One process is reused for every command and never deleted while its own signals are being handled,
+        # which avoids a double delete when a deleted process releases the last reference to the queue
+        self._process = QProcess(self)
+        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._process.readyReadStandardOutput.connect(self._read)
+        self._process.finished.connect(self._finished)
+        self._process.errorOccurred.connect(self._errored)
 
     # The following sets up the busy property check
     @property
     def isBusy(self) -> bool:
-        return self._process is not None
+        return self._running
 
     # The following runs a set of commands
     def run(self, commands: list[list[str]], onDone: Callable[[bool], None] | None = None) -> None:
@@ -45,6 +53,7 @@ class CommandQueue(QObject):
             raise RuntimeError("Another operation is still running")
         self._pendingCommands = list(commands)
         self._onDone = onDone
+        self._running = True
         self.busyChangedSignal.emit(True)
         self._next()
 
@@ -56,40 +65,33 @@ class CommandQueue(QObject):
 
         nextCMD = self._pendingCommands.pop(0)
         self.outputSignal.emit(f"$ {shlex.join(nextCMD)}")
-        newProc = QProcess(self)
-        newProc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        newProc.readyReadStandardOutput.connect(lambda: self._read(newProc))
-        newProc.finished.connect(lambda code, status: self._finished(newProc, code, status))
-        newProc.errorOccurred.connect(lambda err: self._errored(newProc, err))
-        self._process = newProc
-        newProc.start(nextCMD[0], nextCMD[1:])
+        self._process.start(nextCMD[0], nextCMD[1:])
 
     # The following function reads the output from a process
-    def _read(self, readProc: QProcess) -> None:
-        readText = bytes(readProc.readAllStandardOutput().data()).decode(errors="replace").rstrip()
+    def _read(self) -> None:
+        readText = bytes(self._process.readAllStandardOutput().data()).decode(errors="replace").rstrip()
         if readText:
             self.outputSignal.emit(readText)
 
     # The following function reads the exit of a process to check for errors
-    def _finished(self, finishedProcess: QProcess, exitCode: int, exitStatus: QProcess.ExitStatus) -> None:
-        self._read(finishedProcess)
-        finishedProcess.deleteLater()
+    def _finished(self, exitCode: int, exitStatus: QProcess.ExitStatus) -> None:
+        self._read()
         if exitStatus != QProcess.ExitStatus.NormalExit or exitCode != 0:
             self.outputSignal.emit(f"Command failed with exit code {exitCode}")
             self._finish(False)
         else:
-            self._next()
+            # The next command is started once the process has finished handling its own finished signal
+            QTimer.singleShot(0, self, self._next)
 
     # The following is called if a process errors out before starting
-    def _errored(self, erroredProcess: QProcess, processError: QProcess.ProcessError) -> None:
-        if processError == QProcess.ProcessError.FailedToStart:
-            self.outputSignal.emit(f"Failed to start: {erroredProcess.program()}")
-            erroredProcess.deleteLater()
+    def _errored(self, processError: QProcess.ProcessError) -> None:
+        if processError == QProcess.ProcessError.FailedToStart and self._running:
+            self.outputSignal.emit(f"Failed to start: {self._process.program()}")
             self._finish(False)
 
     # The following processes if the queue is complete
     def _finish(self, ok: bool) -> None:
-        self._process = None
+        self._running = False
         self._pendingCommands = []
         callback, self._onDone = self._onDone, None
         self.busyChangedSignal.emit(False)

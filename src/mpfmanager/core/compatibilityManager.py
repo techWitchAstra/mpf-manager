@@ -20,6 +20,7 @@ import urllib.request
 # Importation of libraries to make callable objects and classes for data
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 # Importation of two different options for SSL Certificates
 import certifi
@@ -108,19 +109,20 @@ def isCertException(certException: Exception) -> bool:
     return isinstance(exceptionReason, ssl.SSLCertVerificationError)
 
 
-def jsonRetriever(jsonURL: str, connectionTimeout: float = 15) -> dict:
-    """function for retrieval of JSON data from a url"""
+# The following opens a url trying each ssl certificate source in order, returning the raw bytes
+def urlRetriever(targetURL: str, connectionTimeout: float = 30) -> bytes:
+    """function for retrieval of raw data from a url"""
 
     # The follow places a location to store failure exceptions
     failureAttempts = []
 
-    # The following attempts pull the json data for each ssl bundle
+    # The following attempts pull the data for each ssl bundle
     for certificateSource, make_context in _ssl_contexts():
         try:
             with urllib.request.urlopen(
-                jsonURL, timeout=connectionTimeout, context=make_context()
+                targetURL, timeout=connectionTimeout, context=make_context()
             ) as connectionResponse:
-                return json.load(connectionResponse)
+                return connectionResponse.read()
 
         # The following logs the failure attempt if it is a certificate
         # exception, if not immediately raises it
@@ -131,10 +133,15 @@ def jsonRetriever(jsonURL: str, connectionTimeout: float = 15) -> dict:
 
     # The following raises and outputs the reason for the connection failure
     raise ConnectionError(
-        "Could not verify HTTPS certificate for PyPI. If you are behind "
+        f"Could not verify HTTPS certificate for {targetURL}. If you are behind "
         "a proxy or anti-virus that inspects HTTPS you may need to add "
-        "PyPI's certificate to your system trust store. \n" + "\n".join(failureAttempts)
+        "its certificate to your system trust store. \n" + "\n".join(failureAttempts)
     )
+
+
+def jsonRetriever(jsonURL: str, connectionTimeout: float = 15) -> Any:
+    """function for retrieval of JSON data from a url"""
+    return json.loads(urlRetriever(jsonURL, connectionTimeout))
 
 
 # The following function utilizes the jsonRetriever to get the pypi release

@@ -14,3 +14,5 @@ To give you maximum flexibility you setup MPF in a pair with a version of python
 ## Seetting up a Project
 
 A project contains a link to the mpf machine folder to run, as well as what environment to use to run the game.  This can be changed at any time to upgrade, downgrade, or change which add-ons are enabled with a project.
+
+[![Coverage Status](https://coveralls.io/repos/github/techWitchAstra/mpf-manager/badge.svg?branch=dev)](https://coveralls.io/github/techWitchAstra/mpf-manager?branch=dev)
