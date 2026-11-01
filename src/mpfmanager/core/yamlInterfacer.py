@@ -41,6 +41,16 @@ def _yaml() -> YAML:
     return yamlInterpreter
 
 
+# The following function sets up the YAML interpreter for writing MPF show files, which are a list of steps
+# written from the start of the line as MPF's own shows are, e.g. "- duration: 1s"
+def showYAML() -> YAML:
+    """Yaml Processor for show files"""
+
+    yamlInterpreter = _yaml()
+    yamlInterpreter.indent(mapping=2, sequence=2, offset=0)
+    return yamlInterpreter
+
+
 # The following function loads the yaml files
 def loadYAML(filePath: Path) -> Any:
     """Function for loading YAML files based on a filepath"""
@@ -55,9 +65,55 @@ def loadYAML(filePath: Path) -> Any:
         return _yaml().load(yamlFile)
 
 
+# The following function loads yaml files keeping every value as text
+def loadYAMLText(filePath: Path) -> Any:
+    """Function for loading YAML files with all values left as strings, based on a filepath"""
+
+    # The following if statement checks to see if the file path exists
+    if not filePath.exists():
+        return None
+
+    # The base loader keeps every value as a string, so colors such as 000000
+    # and words such as on and off are not turned into numbers or booleans
+    with filePath.open("r", encoding="utf-8") as yamlFile:
+        return YAML(typ="base").load(yamlFile)
+
+
+# The following matches the start of a top level section of a yaml file, e.g. "shows:"
+_TOP_LEVEL_KEY = re.compile(r"^([A-Za-z_][\w-]*)\s*:")
+
+
+# The following function loads only some top level sections of a yaml file, with all values left as strings.
+# Reading just the sections needed is much faster for large config files, such as an MPF mode's slides and widgets
+def loadYAMLTextSections(filePath: Path, sectionNames: set[str]) -> Any:
+    """Function for loading only the named top level sections of a YAML file as text"""
+
+    # The following if statement checks to see if the file path exists
+    if not filePath.exists():
+        return None
+
+    # The following keeps the lines of the wanted sections, which run from their key to the next top level key
+    keptLines: list[str] = []
+    keepingSection = False
+    for line in filePath.read_text(encoding="utf-8").splitlines():
+        keyMatch = _TOP_LEVEL_KEY.match(line)
+        if keyMatch:
+            keepingSection = keyMatch.group(1) in sectionNames
+        elif line.startswith(("---", "...")) or line[:1] not in ("", " ", "\t", "#", "-"):
+            # Anything else at the start of a line, such as a document marker or quoted key, is not a wanted section,
+            # while list items can start at the start of a line, as in a config: list
+            keepingSection = False
+        if keepingSection:
+            keptLines.append(line)
+    return YAML(typ="base").load("\n".join(keptLines)) or {}
+
+
 # The following function writes the yaml files
-def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None) -> None:
-    """Function for writing YAML files based on data, a file path, and a header string"""
+def writeYAML(
+    dataToWrite: Any, filePath: Path, headerString: str | None = None, yamlInterpreter: YAML | None = None
+) -> None:
+    """Function for writing YAML files based on data, a file path, a header string, and optionally the
+    YAML processor to write with"""
 
     # The following checks to see if the parent directories exist,
     # and creates it if not
@@ -76,7 +132,7 @@ def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None)
                 fileObject.write(headerString.rstrip("\n") + "\n")
 
             # The YAML Data is then written to the file
-            _yaml().dump(dataToWrite, fileObject)
+            (yamlInterpreter or _yaml()).dump(dataToWrite, fileObject)
 
         # The temp file then is moved to be the actual file
         tmpFile.replace(filePath)
