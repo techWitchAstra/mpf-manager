@@ -12,11 +12,15 @@
 from __future__ import annotations
 
 # Importation for paths as well as being able to import the Any type
+import re
 from pathlib import Path
 from typing import Any
 
 # Importation of the ruamel.yaml library matching MPF
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import CommentMark
+from ruamel.yaml.tokens import CommentToken
 
 
 # The following function sets up the YAML intepreter to be used for
@@ -82,3 +86,115 @@ def writeYAML(dataToWrite: Any, filePath: Path, headerString: str | None = None)
     except BaseException:
         tmpFile.unlink(missing_ok=True)
         raise
+
+
+# The following functions work with the comments ruamel.yaml keeps when it reads a file with round trip.  A comment is
+# kept with the item before it: a comment at the end of a line is kept with that line's item, and comments on the
+# lines after an item are kept with that same item, at the deepest last item under it.  So comments written between
+# two steps of a show are kept with the last light (or other setting) of the step before
+
+
+# The following returns where in a list or mapping an item's comment is kept
+def _commentIndex(container: Any) -> int:
+    return 0 if isinstance(container, CommentedSeq) else 2
+
+
+def _isBlock(node: Any) -> bool:
+    return isinstance(node, (CommentedMap, CommentedSeq)) and len(node) > 0 and not node.fa.flow_style()
+
+
+# The following finds the deepest last item under an item, which is where comments after the item are kept
+def _lastCommentSlot(container: Any, key: Any) -> tuple[Any, Any]:
+    value = container[key]
+    while _isBlock(value):
+        container, key = value, (len(value) - 1 if isinstance(value, CommentedSeq) else list(value)[-1])
+        value = container[key]
+    return container, key
+
+
+def _commentToken(container: Any, key: Any) -> CommentToken | None:
+    entry = container.ca.items.get(key) if hasattr(container, "ca") else None
+    index = _commentIndex(container)
+    return entry[index] if entry and len(entry) > index else None
+
+
+# The following returns the comments on the lines after an item, such as the comments above the next item
+def followingComments(container: Any, key: Any) -> list[str]:
+    """Function for listing the whole line comments that follow an item"""
+
+    token = _commentToken(*_lastCommentSlot(container, key))
+    return token.value.partition("\n")[2].splitlines(keepends=True) if token is not None else []
+
+
+# The following takes away the comments on the lines after an item, and returns them, e.g. so they can be moved to
+# wherever the item's place is taken.  A comment at the end of the item's line is left with the item
+def takeFollowingComments(container: Any, key: Any) -> list[str]:
+    """Function for taking the whole line comments that follow an item"""
+
+    lines = followingComments(container, key)
+    token = _commentToken(*_lastCommentSlot(container, key))
+    if token is not None:
+        token.value = token.value.partition("\n")[0] + "\n"
+    return lines
+
+
+# The following returns the comments of an item and everything under it, for an item that is being taken out, as
+# whole line comments.  Comments at the ends of lines describe the lines taken out, so they are only kept if asked for
+def itemComments(container: Any, key: Any, keepEndOfLine: bool) -> list[str]:
+    """Function for listing the comments of an item and everything under it"""
+
+    lines: list[str] = []
+    token = _commentToken(container, key)
+    if token is not None:
+        endOfLine, _, following = token.value.partition("\n")
+        if keepEndOfLine and endOfLine.strip():
+            lines.append(endOfLine.strip() + "\n")
+        lines += following.splitlines(keepends=True)
+    value = container[key]
+    for childKey in (
+        range(len(value)) if isinstance(value, CommentedSeq) else value if isinstance(value, CommentedMap) else []
+    ):
+        lines += itemComments(value, childKey, keepEndOfLine)
+    return lines
+
+
+# The following adds whole line comments after an item, after any comments already there
+def appendComments(container: Any, key: Any, lines: list[str]) -> None:
+    """Function for adding whole line comments after an item"""
+
+    if not lines:
+        return
+    slotContainer, slotKey = _lastCommentSlot(container, key)
+    token = _commentToken(slotContainer, slotKey)
+    if token is None:
+        entry = slotContainer.ca.items.setdefault(slotKey, [None, None, None, None])
+        entry[_commentIndex(slotContainer)] = CommentToken("\n" + "".join(lines), CommentMark(0), None)
+        return
+    token.value = (token.value if token.value.endswith("\n") else token.value + "\n") + "".join(lines)
+
+
+# The following returns the comments written before the start of a list or mapping, such as a file's header
+def startComments(node: Any) -> list[str]:
+    """Function for listing the comments before a list or mapping"""
+
+    comment = node.ca.comment if isinstance(node, (CommentedMap, CommentedSeq)) else None
+    if not comment or len(comment) < 2 or not comment[1]:
+        return []
+    return [token.value for token in comment[1]]
+
+
+# The following sets the comments written before the start of a list or mapping
+def setStartComments(node: CommentedMap | CommentedSeq, lines: list[str]) -> None:
+    """Function for setting the comments before a list or mapping"""
+
+    tokens = [CommentToken(line.lstrip() if line.strip() else "\n", CommentMark(0), None) for line in lines]
+    node.ca.comment = [None, tokens] if tokens else None
+
+
+# The following sets the comments written on the lines before a key of a mapping, indented to the key
+def setCommentsBefore(container: CommentedMap, key: Any, lines: list[str], indent: int) -> None:
+    """Function for setting the comments before a key of a mapping"""
+
+    tokens = [CommentToken(line.lstrip() if line.strip() else "\n", CommentMark(indent), None) for line in lines]
+    entry = container.ca.items.setdefault(key, [None, None, None, None])
+    entry[1] = tokens or None
