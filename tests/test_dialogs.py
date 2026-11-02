@@ -179,8 +179,57 @@ def test_newProjectDialogValidation(qtbot, tmp_path):
     dialog.projectName.setText("exists")
     assert "already exists" in dialog.operationStatus.text()
     dialog.projectName.setText("new")
-    assert dialog.operationStatus.text() == ""
+    # Without any environments, the dialog says one can be set up with the project, without stopping it
+    assert dialog.operationStatus.text().startswith("No environments yet")
+    assert dialog.projectDialogbuttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
     assert dialog.projectPath() == tmp_path / "new"
+
+
+def _plan(tmp_path, name: str = "fresh", mpfVersion: str = "0.80.0") -> dialogs.venvDialogData:
+    return dialogs.venvDialogData(name, tmp_path / name, "3.13", mpfVersion, [f"mpf=={mpfVersion}"], [], [])
+
+
+def test_newProjectDialogSetsUpANewEnvironment(qtbot, tmp_path, monkeypatch):
+    store = StorageProcessor()
+    store.addVENV(VirtualEnvironment("old", str(tmp_path / "old"), "3.11", "0.57.0"))
+    dialog = dialogs.mpfProjectCreationDialog(store)
+    qtbot.addWidget(dialog)
+    dialog.projectParentFolder.setText(str(tmp_path))
+    dialog.projectName.setText("new")
+    assert dialog.operationStatus.text().startswith("The project will not have an environment")
+
+    # A cancelled environment dialog changes nothing
+    monkeypatch.setattr(dialogs.VENVManagementDialog, "__init__", lambda self, *args: dialogs.QDialog.__init__(self))
+    monkeypatch.setattr(dialogs.VENVManagementDialog, "exec", lambda _dialog: 0)
+    assert not dialog.chooseNewEnvironment()
+    assert dialog.pendingEnvironment() is None and dialog.environmentPair.count() == 2
+
+    # An accepted one is chosen for the project, and allows a GMC project with MPF 0.80
+    monkeypatch.setattr(dialogs.VENVManagementDialog, "exec", lambda _dialog: 1)
+    monkeypatch.setattr(dialogs.VENVManagementDialog, "plan", lambda _dialog: _plan(tmp_path))
+    monkeypatch.setattr(dialogs.VENVManagementDialog, "venvParentFolderPath", lambda _dialog: tmp_path / "envs")
+    dialog.newEnvironmentButton.click()
+    assert dialog.environmentPair.currentText() == "fresh  (new: MPF 0.80.0, Python 3.13)"
+    assert dialog.pendingEnvironment() == _plan(tmp_path)
+    assert dialog.newEnvironmentFolder == tmp_path / "envs"
+    assert dialog.createGMCCheckBox.isEnabled()
+    assert dialog.operationStatus.text() == ""
+
+    # Choosing it again replaces it, and choosing another environment leaves it unmade
+    monkeypatch.setattr(dialogs.VENVManagementDialog, "plan", lambda _dialog: _plan(tmp_path, "older", "0.57.0"))
+    assert dialog.chooseNewEnvironment()
+    assert dialog.environmentPair.count() == 3 and dialog.pendingEnvironment().venvName == "older"
+    assert not dialog.createGMCCheckBox.isEnabled()
+    dialog.environmentPair.setCurrentIndex(dialog.environmentPair.findData("old"))
+    assert dialog.pendingEnvironment() is None
+
+    # A plan that cannot be made is explained
+    def planFails(_dialog):
+        raise OSError("git is not installed")
+
+    monkeypatch.setattr(dialogs.VENVManagementDialog, "plan", planFails)
+    assert not dialog.chooseNewEnvironment()
+    assert dialog.operationStatus.text() == "git is not installed"
 
 
 def test_browseButtonsFillInChoices(qtbot, monkeypatch):
@@ -224,10 +273,13 @@ def test_appMainShowsWindowAndExitsWithAppCode(monkeypatch):
             return 7
 
     class FakeWindow:
+        def __init__(self, storedData):
+            events.append(("window", storedData.settings.theme))
+
         def show(self):
             events.append(("show",))
 
-        def runStartupProfile(self):
+        def startUp(self):
             events.append(("startup",))
 
     class FakeTimer:
@@ -238,11 +290,14 @@ def test_appMainShowsWindowAndExitsWithAppCode(monkeypatch):
     monkeypatch.setattr(app, "QApplication", FakeApplication)
     monkeypatch.setattr(app, "MainWindow", FakeWindow)
     monkeypatch.setattr(app, "QTimer", FakeTimer)
+    monkeypatch.setattr(app, "applyTheme", lambda _app, name: events.append(("theme", name)))
     with pytest.raises(SystemExit) as exited:
         app.main()
     assert exited.value.code == 7
     assert ("name", "mpf-Manager") in events and ("show",) in events
     assert events.index(("show",)) < events.index(("startup",))
+    # The theme is given before the window is made, as icons are drawn in its colors
+    assert events.index(("theme", "purple")) < events.index(("window", "purple"))
 
 
 def test_settingsDialogStartupProfile(qtbot):

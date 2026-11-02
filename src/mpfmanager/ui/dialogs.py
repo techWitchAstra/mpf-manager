@@ -35,6 +35,7 @@ from mpfmanager.core import compatibilityManager, gmcManager, sourceManager
 from mpfmanager.core import projectManager as mpfProjects
 from mpfmanager.core import uvManager as uvCMDs
 from mpfmanager.core.storageManager import Project, RunProfile, Settings, StorageProcessor, VirtualEnvironment
+from mpfmanager.ui.theme import THEME_LABELS, themeName
 from mpfmanager.ui.uiWorkers import runInThread
 
 # The following delcares packages to be installed
@@ -612,7 +613,7 @@ class mpfProjectCreationDialog(QDialog):
         super().__init__(parentWidget)
         self.store = store
         self.setWindowTitle("New MPF project")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(580)
 
         self.projectName = QLineEdit()
         self.projectName.textChanged.connect(self._validateProject)
@@ -620,12 +621,27 @@ class mpfProjectCreationDialog(QDialog):
         self.projectParentFolder.textChanged.connect(self._validateProject)
         self.environmentPair = environmentPairing(store)
         self.operationStatus = QLabel()
+        self.operationStatus.setWordWrap(True)
+
+        # The following sets up a new environment along with the project, e.g. when there are none yet.  It is made
+        # once the project is, if it is still the environment chosen
+        self.newEnvironmentPlan: venvDialogData | None = None
+        self.newEnvironmentFolder: Path | None = None
+        self.newEnvironmentButton = QPushButton("New environment…")
+        self.newEnvironmentButton.setToolTip("Set up a new MPF+Python environment for this project, made with it")
+        self.newEnvironmentButton.clicked.connect(self.chooseNewEnvironment)
+        self.environmentPair.currentIndexChanged.connect(self._validateProject)
+        environmentRow = QWidget()
+        environmentLayout = QHBoxLayout(environmentRow)
+        environmentLayout.setContentsMargins(0, 0, 0, 0)
+        environmentLayout.addWidget(self.environmentPair, 1)
+        environmentLayout.addWidget(self.newEnvironmentButton)
 
         # The following sets up the new project form
         projectForm = QFormLayout()
         projectForm.addRow("Name:", self.projectName)
         projectForm.addRow("Create in:", _browseWidget(self.projectParentFolder, self, "Choose a folder"))
-        projectForm.addRow("Environment:", self.environmentPair)
+        projectForm.addRow("Environment:", environmentRow)
 
         # The following offers to generate a GMC godot project when the environment can run GMC
         self.createGMCCheckBox = QCheckBox("Also create a GMC (Godot) project")
@@ -648,9 +664,41 @@ class mpfProjectCreationDialog(QDialog):
         projectDialoglayout.addWidget(self.projectDialogbuttons)
         self._validateProject()
 
+    # The following asks how the new environment is set up, and chooses it for the project
+    def chooseNewEnvironment(self) -> bool:
+        environmentDialog = VENVManagementDialog(self.store, self)
+        if not environmentDialog.exec():
+            return False
+        try:
+            plan = environmentDialog.plan()
+        except OSError as planException:
+            self.operationStatus.setText(str(planException))
+            return False
+        if self.newEnvironmentPlan is not None:
+            self.environmentPair.removeItem(self.environmentPair.findData(self.newEnvironmentPlan.venvName))
+        self.newEnvironmentPlan = plan
+        self.newEnvironmentFolder = environmentDialog.venvParentFolderPath()
+        mpfText = "MPF from source" if plan.editableMPFPath else f"MPF {plan.mpfVersion}"
+        self.environmentPair.addItem(f"{plan.venvName}  (new: {mpfText}, Python {plan.pythonVersion})", plan.venvName)
+        self.environmentPair.setCurrentIndex(self.environmentPair.count() - 1)
+        return True
+
+    # The following returns the new environment to make with the project, when it is the one chosen
+    def pendingEnvironment(self) -> venvDialogData | None:
+        plan = self.newEnvironmentPlan
+        if plan is not None and self.environmentPair.currentData() == plan.venvName:
+            return plan
+        return None
+
+    # The following returns the environment chosen, as it will be once made when it is a new one
+    def _chosenEnvironment(self) -> VirtualEnvironment | None:
+        if plan := self.pendingEnvironment():
+            return VirtualEnvironment(plan.venvName, str(plan.venvPath), plan.pythonVersion, plan.mpfVersion)
+        return self.store.getVENVbyName(self.environmentPair.currentData())
+
     # The following only allows a GMC project to be created alongside an environment that can run GMC
     def _updateGMCOption(self) -> None:
-        gmcAllowed = mpfProjects.isGMCEligible(self.store.getVENVbyName(self.environmentPair.currentData()))
+        gmcAllowed = mpfProjects.isGMCEligible(self._chosenEnvironment())
         self.createGMCCheckBox.setEnabled(gmcAllowed)
         if not gmcAllowed:
             self.createGMCCheckBox.setChecked(False)
@@ -669,7 +717,15 @@ class mpfProjectCreationDialog(QDialog):
             problem = "The name cannot contain path separators."
         elif self.projectPath().exists():
             problem = f"'{self.projectPath()}' already exists."
-        self.operationStatus.setText(problem)
+        # Without an environment the project can still be made, and paired with one later
+        hint = ""
+        if not problem and self.environmentPair.currentData() is None:
+            hint = (
+                "No environments yet. Press New environment… to set one up with this project."
+                if not self.store.environmentList and self.newEnvironmentPlan is None
+                else "The project will not have an environment until one is paired with it."
+            )
+        self.operationStatus.setText(problem or hint)
         self.projectDialogbuttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not problem)
 
 
@@ -778,7 +834,7 @@ class SettingsDialog(QDialog):
         runProfiles: list[RunProfile] | None = None,
     ):
         super().__init__(parentWidget)
-        self.setWindowTitle("MPF-Manager Settings")
+        self.setWindowTitle("MPF-Manager Preferences")
         self.setMinimumWidth(480)
         self.venvDirectoryDialog = QLineEdit(settings.venvDirectory)
         self.projectDirectoryDialog = QLineEdit(settings.projectDirectory)
@@ -818,11 +874,19 @@ class SettingsDialog(QDialog):
         self.startupProfileCheckBox.setChecked(hasProfiles and settings.runProfileAtStartup and startupIndex >= 0)
         self.startupProfileCheckBox.setEnabled(hasProfiles)
         if not hasProfiles:
-            self.startupProfileCheckBox.setToolTip("Save a run profile from the MPF Projects tab first")
+            self.startupProfileCheckBox.setToolTip("Save a run profile from the Run tab of the Project Manager first")
         self.startupProfileCheckBox.toggled.connect(self.startupProfileOption.setEnabled)
         self.startupProfileOption.setEnabled(self.startupProfileCheckBox.isChecked())
         settingsForm.addRow("", self.startupProfileCheckBox)
         settingsForm.addRow("Startup profile:", self.startupProfileOption)
+
+        # The following chooses how MPF-Manager looks
+        self.themeOption = QComboBox()
+        for name, label in THEME_LABELS.items():
+            self.themeOption.addItem(label, name)
+        self.themeOption.setCurrentIndex(max(self.themeOption.findData(themeName(settings.theme)), 0))
+        self.themeOption.setToolTip("Purple, with light or dark panels, or the system's own look")
+        settingsForm.addRow("Theme:", self.themeOption)
 
         # The following configures the dialog buttons for settings
         settingsDialogbuttons = QDialogButtonBox(
@@ -852,6 +916,7 @@ class SettingsDialog(QDialog):
         startupProfileName = self.startupProfileOption.currentData()
         settings.runProfileAtStartup = self.startupProfileCheckBox.isChecked() and bool(startupProfileName)
         settings.startupRunProfile = startupProfileName if settings.runProfileAtStartup else ""
+        settings.theme = self.themeOption.currentData()
 
 
 # The following creates a callable combo box to display the installed environment pairings
