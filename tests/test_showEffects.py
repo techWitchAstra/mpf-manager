@@ -419,9 +419,19 @@ def test_framesAreWorkedOutOnce():
     assert LightEffect("box", "rectangle", ShapePlace(0.5, 0.5, 1, 1)).frameAt(0).stars is None
 
 
+# The following is how long painting a big effect may take: well under a second, or a few times that while coverage
+# is being measured, which slows every line of Python run, and more so on slower machines such as shared CI runners
+def _paintingBudget() -> float:
+    import sys
+
+    measuringCoverage = "coverage" in sys.modules and sys.modules["coverage"].Coverage.current() is not None
+    return 2.0 if measuringCoverage else 0.6
+
+
 def test_bigEffectsArePaintedQuickly():
     import time
 
+    budget = _paintingBudget()
     lights = {f"l_{row}_{column}": ((column + 0.5) / 8, (row + 0.5) / 6) for row in range(12) for column in range(8)}
     show = parseShow([{"duration": "250ms", "lights": {"l_0_0": "red"}} for _ in range(8)], "big")
     rainbow = LightEffect(
@@ -435,11 +445,11 @@ def test_bigEffectsArePaintedQuickly():
     )
     started = time.perf_counter()
     assert showEffects.applyEffect(show, rainbow, lights)
-    assert time.perf_counter() - started < 0.6
+    assert time.perf_counter() - started < budget
 
     stars = LightEffect(
         "stars", "starfield", ShapePlace(0.5, 1.0, 0.9, 1.8), duration=4.0, stepTime=0.025, starDensity=0.5
     )
     started = time.perf_counter()
     showEffects.effectLightFrames(stars, lights)
-    assert time.perf_counter() - started < 0.6
+    assert time.perf_counter() - started < budget

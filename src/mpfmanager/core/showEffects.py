@@ -131,6 +131,38 @@ class EffectFrame:
     place: ShapePlace
     color: tuple[int, int, int]
     stars: list[StarPlace] | None = None
+    # The stars sorted from left to right, for finding those near a point quickly, worked out when first needed
+    _starsAcross: StarsAcross | None = field(default=None, init=False, repr=False, compare=False)
+
+    def starsAcross(self) -> StarsAcross:
+        if self._starsAcross is None:
+            self._starsAcross = StarsAcross(self.stars or [])
+        return self._starsAcross
+
+
+# The following is a starfield's stars at one moment sorted by how far across they are, so the stars that can be over
+# a point are found without looking at every star.  Each is kept with its place in the field's own order, so the stars
+# near a point are looked at in that order, and the same star lights a point as when every star is looked at
+@dataclass
+class StarsAcross:
+    """A starfield's stars at one moment, sorted from left to right"""
+
+    xs: list[float]
+    order: list[int]
+    stars: list[StarPlace]
+    largest: float
+
+    def __init__(self, stars: list[StarPlace]) -> None:
+        self.stars = stars
+        self.order = sorted(range(len(stars)), key=lambda index: stars[index].x)
+        self.xs = [stars[index].x for index in self.order]
+        self.largest = max((star.size for star in stars), default=0.0)
+
+    # The following returns the stars within a distance across of a point, in the field's own order
+    def near(self, x: float, distance: float) -> list[StarPlace]:
+        first = bisect.bisect_left(self.xs, x - distance)
+        last = bisect.bisect_right(self.xs, x + distance)
+        return [self.stars[index] for index in sorted(self.order[first:last])]
 
 
 # The following is a lighting effect: a shape, its color, and how it moves over its span of the show
@@ -274,7 +306,7 @@ class LightEffect:
         frame = frame or self.frameAt(atTime)
         place = frame.place
         if self.shape == SHAPE_STARFIELD:
-            coverage, star = self._starCoverage(frame.stars or [], place, x, y, reach)
+            coverage, star = self._starCoverage(frame, place, x, y, reach)
             if star is not None and self.starColoring == STARS_RANDOM_COLORS:
                 rgb = starColor(star)
             else:
@@ -376,11 +408,13 @@ class LightEffect:
 
     # The following returns how brightly the stars light a point, and the star lighting it most
     def _starCoverage(
-        self, stars: list[StarPlace], place: ShapePlace, x: float, y: float, reach: float
+        self, frame: EffectFrame, place: ShapePlace, x: float, y: float, reach: float
     ) -> tuple[float, Star | None]:
         localX, localY = _localPoint(place, x, y)
         best, bestStar = 0.0, None
-        for starPlace in stars:
+        # Only the stars close enough across to reach the point can light it
+        across = frame.starsAcross()
+        for starPlace in across.near(localX, across.largest + reach + self.softness):
             offsetX, offsetY = localX - starPlace.x, localY - starPlace.y
             limit = starPlace.size + reach + self.softness
             if abs(offsetX) > limit or abs(offsetY) > limit:
