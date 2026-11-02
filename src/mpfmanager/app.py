@@ -18,7 +18,9 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 # Import UI from UI folder
+from mpfmanager.core.storageManager import StorageProcessor
 from mpfmanager.ui.mainWindow import MainWindow
+from mpfmanager.ui.theme import applyTheme
 
 
 # The following defines the main application activity or routine
@@ -29,12 +31,14 @@ def main() -> None:
     managerApplication = QApplication(sys.argv)
     managerApplication.setApplicationName("mpf-Manager")
 
-    # The following defines the main window for users
-    managerWindow = MainWindow()
+    # The following gives the application its theme, before its windows are made, and the main window for users
+    storedData = StorageProcessor()
+    applyTheme(managerApplication, storedData.settings.theme)
+    managerWindow = MainWindow(storedData)
     managerWindow.show()
 
-    # Once the event loop has started, run the startup run profile if running one at startup is enabled
-    QTimer.singleShot(0, managerWindow.runStartupProfile)
+    # Once the event loop has started, run the startup run profile, or ask which project to open
+    QTimer.singleShot(0, managerWindow.startUp)
 
     # Qt Closing line to pass exit code on exit
     sys.exit(managerApplication.exec())

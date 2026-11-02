@@ -64,17 +64,12 @@ def _projectWindow(qtbot, tmp_path, environment: VirtualEnvironment | None):
         store.addVENV(environment)
     store.addProject(Project("machine", str(_machine(tmp_path / "machine")), environment and environment.venvName))
     window = _window(qtbot, store)
-    window.projectListTable.selectRow(0)
+    window.openProject(window.storedData.projectList[0])
     return window
 
 
 def _selectMode(window: MainWindow, mode: str) -> None:
     window.runModeOption.setCurrentIndex(window.runModeOption.findData(mode))
-
-
-def _cellText(window: MainWindow, row: int, column: int) -> str:
-    item = window.projectListTable.item(row, column)
-    return item.text() if item else ""
 
 
 def test_projectStatuses(qtbot, tmp_path):
@@ -83,10 +78,22 @@ def test_projectStatuses(qtbot, tmp_path):
     (tmp_path / "noconfig").mkdir()
     store.addProject(Project("noconfig", str(tmp_path / "noconfig")))
     store.addProject(Project("missing", str(tmp_path / "missing")))
+    assert [mainWindow.projectStatus(project, {}) for project in store.projectList] == [
+        "OK",
+        "No config/config.yaml",
+        "Missing",
+    ]
+    assert mainWindow.projectStatus(store.projectList[0], {str(tmp_path / "ok"): {"game": None}}) == "Running (game)"
+
+    # The open project's details are shown on the Project Manager
     window = _window(qtbot, store)
-    assert [_cellText(window, row, 3) for row in range(3)] == ["OK", "No config/config.yaml", "Missing"]
-    assert _cellText(window, 0, 2) == f"v{projectManager.CONFIG_VERSION}"
-    assert _cellText(window, 1, 2) == "—"
+    window.openProject(store.projectList[0])
+    assert window.overviewLabels["status"].text() == "OK"
+    assert window.overviewLabels["config"].text() == f"v{projectManager.CONFIG_VERSION}"
+    assert window.overviewLabels["path"].text() == str(tmp_path / "ok")
+    window.openProject(store.projectList[1])
+    assert window.overviewLabels["config"].text() == "—"
+    assert window.overviewLabels["status"].text() == "No config/config.yaml"
 
 
 def test_openFolderButtons(qtbot, tmp_path, monkeypatch):
@@ -105,11 +112,12 @@ def test_addExistingProject(qtbot, tmp_path, monkeypatch):
     errors = _errors(window, monkeypatch)
     machine = _machine(tmp_path / "machine")
     monkeypatch.setattr(mainWindow.QFileDialog, "getExistingDirectory", lambda *_args: str(machine))
-    window.addExistingProject()
-    assert window.storedData.getProjectbyPath(str(machine)) is not None
+    added = window.addExistingProject()
+    assert added is not None and window.storedData.getProjectbyPath(str(machine)) is added
 
-    window.addExistingProject()
-    assert errors and "already registered" in errors[0]
+    # Opening a folder that is listed gives its project
+    assert window.addExistingProject() is added
+    assert errors == [] and len(window.storedData.projectList) == 1
 
 
 def test_addExistingProjectWithoutConfigAsks(qtbot, tmp_path, monkeypatch):
@@ -343,7 +351,7 @@ def test_stoppingTheGameStopsCompanions(qtbot, tmp_path):
     game, monitor = _FakeProcess(), _FakeProcess()
     window.runningProcesses[project.projectPath] = {"game": game, "monitor": monitor}  # type: ignore[dict-item]
     window.refreshMainWindow()
-    assert _cellText(window, 0, 3) == "Running (game + monitor)"
+    assert window.overviewLabels["status"].text() == "Running (game + monitor)"
     assert window.stopMPFButton.isEnabled()
 
     window._processStopped(project, game, "game", 0)  # type: ignore[arg-type]
@@ -527,7 +535,7 @@ def test_saveRunProfileFromRunOptions(qtbot, tmp_path, monkeypatch):
     profile = StorageProcessor().getRunProfileByName("attract")
     assert profile == RunProfile("attract", str(tmp_path / "machine"), "game", ["-x"], True, True, False, "-v")
     assert window.selectedRunProfile() == window.storedData.getRunProfileByName("attract")
-    assert window.runProfileOption.currentText().startswith("attract  (machine, Game)")
+    assert window.runProfileOption.currentText().startswith("attract  (Game)")
 
 
 def test_saveRunProfileAsksBeforeReplacing(qtbot, tmp_path, monkeypatch):
@@ -581,9 +589,12 @@ def test_loadRunProfileSetsRunOptions(qtbot, tmp_path, monkeypatch):
     store.addProject(Project("second", str(_machine(tmp_path / "second")), "env"))
     store.saveRunProfile(RunProfile("p", str(tmp_path / "second"), "both", [], False, True, False, "-v"))
     window = _window(qtbot, store)
-    window.projectListTable.selectRow(0)
-    window.loadRunProfileButton.click()
+    window.openProject(window.storedData.projectList[0])
+    # Only the open project's run profiles are listed, and loading one opens its project
+    assert window.runProfileOption.count() == 0 and not window.loadRunProfileButton.isEnabled()
+    window.loadRunProfile(store.getRunProfileByName("p"))
     assert window.selectedProject().projectName == "second"
+    assert window.runProfileOption.currentData() == "p"
     assert window.runModeOption.currentData() == "both"
     assert window.hardwareOption.currentData() == []
     assert window.runMPFMonitorCheckBox.isChecked()
@@ -607,7 +618,7 @@ def test_runAtStartupCheckBoxAndStartupRun(qtbot, tmp_path, monkeypatch):
     started = _spyStarts(restarted, monkeypatch)
     restarted.runStartupProfile()
     assert [label for _command, label, _path in started] == ["game"]
-    assert restarted.tabs.currentIndex() == 1 and restarted.selectedProject().projectName == "machine"
+    assert restarted.selectedProject().projectName == "machine"
 
     window.runAtStartupCheckBox.setChecked(False)
     assert StorageProcessor().startupProfile() is None
@@ -638,3 +649,270 @@ def test_deleteRunProfile(qtbot, tmp_path, monkeypatch):
     window.deleteRunProfileButton.click()
     assert StorageProcessor().runProfileList == [] and StorageProcessor().startupProfile() is None
     assert window.runProfileOption.count() == 0 and not window.runProfileButton.isEnabled()
+
+
+def _menuTitles(window: MainWindow) -> list[str]:
+    return [action.text().replace("&", "") for action in window.menuBar().actions()]
+
+
+def test_projectManagerRibbonRunsTheProject(qtbot, tmp_path):
+    window = _projectWindow(qtbot, tmp_path, _installedEnvironment(tmp_path))
+    ribbon = window.ribbon
+    assert [ribbon.tabText(index) for index in range(ribbon.count())] == ["Run", "Project"]
+    assert ribbon.currentIndex() == mainWindow.RUN_RIBBON_TAB
+    assert list(ribbon.ribbonTab("Run").groups) == ["Run", "Options", "Run profiles"]
+    assert list(ribbon.ribbonTab("Project").groups) == ["Project", "Open", "Environment", "Godot"]
+    assert window.windowTitle() == "MPF-Manager — machine"
+    assert window.managerTabs.tabText(mainWindow.PROJECT_MANAGER_TAB) == "Project Manager"
+
+
+def test_projectManagerMenus(qtbot):
+    window = _window(qtbot, StorageProcessor())
+    assert _menuTitles(window) == ["File", "Project", "Run", "Settings", "View"]
+    menus = {action.text().replace("&", ""): action.menu() for action in window.menuBar().actions()}
+    assert window.openProjectAction in menus["File"].actions() and window.newProjectAction in menus["File"].actions()
+    assert window.runMPFAction in menus["Run"].actions()
+    assert menus["Settings"].actions() == [window.manageEnvironmentsAction, window.settingsAction]
+    assert window.settingsAction.text() == "&Preferences…"
+
+    # An action and its ribbon button are enabled together, so the menus and ribbon agree
+    assert not window.stopMPFAction.isEnabled() and not window.stopMPFButton.isEnabled()
+    assert window.newVENVAction.isEnabled() and window.newVENVButton.isEnabled()
+
+    # The ribbon and output log can be hidden
+    window.show()
+    window.showOutputAction.setChecked(False)
+    assert not window.outputViewer.isVisible()
+    window.showRibbonAction.setChecked(False)
+    assert not window.ribbon.isVisible()
+
+
+def test_withoutAProjectTheWindowAsksForOne(qtbot, tmp_path, monkeypatch):
+    window = _projectWindow(qtbot, tmp_path, None)
+    window.show()
+    assert window.projectDetails.isVisible() and not window.noProjectPrompt.isVisible()
+    window.closeProjectAction.trigger()
+    assert window.selectedProject() is None and window.windowTitle() == "MPF-Manager"
+    assert window.noProjectPrompt.isVisible() and not window.projectDetails.isVisible()
+    for action in (
+        window.runMPFAction,
+        window.openProjectFolderAction,
+        window.viewShowsAction,
+        window.saveRunProfileAction,
+        window.closeProjectAction,
+    ):
+        assert not action.isEnabled()
+    assert not window.environmentOption.isEnabled()
+
+    # The prompt's button asks which project to open
+    asked = []
+    monkeypatch.setattr(window, "showProjectPicker", lambda: asked.append(True))
+    window.promptOpenButton.click()
+    window.openProjectAction.trigger()
+    assert asked == [True, True]
+
+
+def test_openProjectChecksTheProjectIsListed(qtbot, tmp_path):
+    window = _projectWindow(qtbot, tmp_path, None)
+    assert not window.openProject(Project("stranger", str(tmp_path / "stranger")))
+    assert window.selectedProject().projectName == "machine"
+    # A project taken off the list is no longer open
+    window.removeProject()
+    assert window.selectedProject() is None and window.windowTitle() == "MPF-Manager"
+
+
+def test_theRibbonChoosesTheProjectsEnvironment(qtbot, tmp_path):
+    store = StorageProcessor()
+    store.addVENV(_installedEnvironment(tmp_path, "0.80.0"))
+    store.addProject(Project("machine", str(_machine(tmp_path / "machine"))))
+    window = _window(qtbot, store)
+    window.openProject(store.projectList[0])
+    assert window.environmentOption.currentData() is None
+    assert "None" in window.overviewLabels["environment"].text()
+    assert not window.createGMCAction.isEnabled()
+
+    window.environmentOption.setCurrentIndex(window.environmentOption.findData("env"))
+    assert StorageProcessor().projectList[0].virtualEnvironment == "env"
+    assert window.overviewLabels["environment"].text() == "env  (MPF 0.80.0, Python 3.13)"
+    # The run options follow the environment, which can run GMC
+    assert window.createGMCAction.isEnabled()
+    runModeModel = cast(QStandardItemModel, window.runModeOption.model())
+    assert runModeModel.item(window.runModeOption.findData("gmc")).isEnabled()
+
+
+def test_environmentsAreManagedFromSettings(qtbot, tmp_path):
+    store = StorageProcessor()
+    store.addVENV(_installedEnvironment(tmp_path))
+    window = _window(qtbot, store)
+    window.show()
+    assert not window.environmentsDialog.isVisible()
+    window.manageEnvironmentsAction.trigger()
+    assert window.environmentsDialog.isVisible() and not window.environmentsDialog.isModal()
+    assert window.venvAvailableTable.window() is window.environmentsDialog
+    assert window.venvAvailableTable.rowCount() == 1
+    assert [button.defaultAction() for button in window.environmentsDialog.buttons] == [
+        window.newVENVAction,
+        window.changeVENVAction,
+        window.verifyVENVAction,
+        window.openVENVAction,
+        window.openSourceAction,
+        window.deleteVENVAction,
+    ]
+
+
+def test_startUpAsksWhichProjectToOpen(qtbot, tmp_path, monkeypatch):
+    store = StorageProcessor()
+    store.addProject(Project("machine", str(_machine(tmp_path / "machine"))))
+    window = _window(qtbot, store)
+
+    # The project chosen in the dialog is opened
+    def choose(picker):
+        picker.openChosen()
+        return 1
+
+    monkeypatch.setattr(mainWindow.ProjectPickerDialog, "exec", choose)
+    window.startUp()
+    assert window.selectedProject().projectName == "machine"
+
+    # Cancelling it leaves the window without a project
+    window.closeProject()
+    monkeypatch.setattr(mainWindow.ProjectPickerDialog, "exec", lambda _picker: 0)
+    window.startUp()
+    assert window.selectedProject() is None
+
+    # A new project made from the dialog is opened
+    def makeNew(picker):
+        picker.newButton.click()
+        return picker.result()
+
+    newMachine = _machine(tmp_path / "new")
+    monkeypatch.setattr(
+        window,
+        "createNewProject",
+        lambda: (
+            window.storedData.addProject(Project("new", str(newMachine)))
+            or window.storedData.getProjectbyPath(str(newMachine))
+        ),
+    )
+    monkeypatch.setattr(mainWindow.ProjectPickerDialog, "exec", makeNew)
+    assert window.showProjectPicker()
+    assert window.selectedProject().projectName == "new"
+
+
+def test_startUpRunsTheStartupProfileWithoutAsking(qtbot, tmp_path, monkeypatch):
+    environment = _installedEnvironment(tmp_path)
+    store = StorageProcessor()
+    store.addVENV(environment)
+    store.addProject(Project("machine", str(_machine(tmp_path / "machine")), "env"))
+    store.saveRunProfile(RunProfile("p", str(tmp_path / "machine")))
+    store.setStartupRunProfile("p")
+    window = _window(qtbot, store)
+    started = _spyStarts(window, monkeypatch)
+    monkeypatch.setattr(mainWindow.ProjectPickerDialog, "exec", lambda _picker: pytest.fail("asked for a project"))
+    window.startUp()
+    assert window.selectedProject().projectName == "machine"
+    assert [label for _command, label, _path in started] == ["game"]
+
+
+def test_managersArePagesOfOneWindow(qtbot):
+    window = _window(qtbot, StorageProcessor())
+    window.show()
+    assert window.managerTabs.currentIndex() == mainWindow.PROJECT_MANAGER_TAB
+    assert window.pages.currentWidget() is window.projectManagerPage
+
+    # The Show Manager is a page of the same window, with its own menus, and without tabs of its own
+    window.showManagerAction.trigger()
+    viewer = window.showViewerWindow
+    assert viewer is not None and window.pages.currentWidget() is viewer and viewer.isVisible()
+    assert not viewer.managerTabs.isVisible() and viewer.isWindow() is False
+    assert window.managerTabs.currentIndex() == mainWindow.SHOW_MANAGER_TAB
+    assert _menuTitles(window) == ["File", "Edit", "View", "Playback", "Tools"]
+    assert window.windowTitle() == viewer.windowTitle()
+    assert window.width() >= mainWindow.SHOW_MANAGER_SIZE[0]
+
+    # Closing the Show Manager, or choosing the Project Manager tab, goes back to the Project Manager
+    viewer.closeAction.trigger()
+    assert window.pages.currentWidget() is window.projectManagerPage and not viewer.isVisible()
+    assert _menuTitles(window) == ["File", "Project", "Run", "Settings", "View"]
+    assert window.windowTitle() == "MPF-Manager"
+    window.managerTabs.managerChosen.emit(mainWindow.SHOW_MANAGER_TAB)
+    assert window.pages.currentWidget() is viewer
+    window.managerTabs.managerChosen.emit(mainWindow.PROJECT_MANAGER_TAB)
+    assert window.managerTabs.currentIndex() == mainWindow.PROJECT_MANAGER_TAB
+    assert window.pages.currentWidget() is window.projectManagerPage
+
+
+def _newProjectWithEnvironment(window, tmp_path, monkeypatch, mpfVersion="0.80.0", createGMC=False):
+    plan = venvDialogData("fresh", tmp_path / "fresh", "3.13", mpfVersion, [f"mpf=={mpfVersion}"], [], [])
+
+    def accept(dialog):
+        dialog.projectName.setText("pinball")
+        dialog.projectParentFolder.setText(str(tmp_path))
+        dialog.newEnvironmentPlan = plan
+        dialog.newEnvironmentFolder = tmp_path / "envs"
+        dialog.environmentPair.addItem("fresh (new)", "fresh")
+        dialog.environmentPair.setCurrentIndex(dialog.environmentPair.count() - 1)
+        dialog.createGMCCheckBox.setChecked(createGMC)
+        return 1
+
+    monkeypatch.setattr(dialogs.mpfProjectCreationDialog, "exec", accept)
+    window.createNewProject()
+
+
+def test_createNewProjectWithANewEnvironment(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(uvManager, "locateUV", lambda: "uv")
+    window = _window(qtbot, StorageProcessor())
+    ranCommands = []
+    monkeypatch.setattr(
+        window.commandQueue, "run", lambda commands, onDone: (ranCommands.extend(commands), onDone(True))
+    )
+    _newProjectWithEnvironment(window, tmp_path, monkeypatch)
+
+    # The project is made, then the environment, which the project is paired with
+    assert projectManager.checkMPFProjectAtPath(tmp_path / "pinball")
+    assert len(ranCommands) == 2 and ranCommands[1][2] == "install"
+    assert window.storedData.getVENVbyName("fresh") is not None
+    project = window.storedData.getProjectbyPath(str(tmp_path / "pinball"))
+    assert project is not None and project.virtualEnvironment == "fresh"
+    assert window.storedData.settings.venvDirectory == str(tmp_path / "envs")
+    assert "'pinball' now uses the environment 'fresh'." in window.outputViewer.toPlainText()
+
+
+def test_createNewProjectWhenItsEnvironmentFails(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(uvManager, "locateUV", lambda: "uv")
+    window = _window(qtbot, StorageProcessor())
+    monkeypatch.setattr(window.commandQueue, "run", lambda _commands, onDone: onDone(False))
+    gmcProjects = []
+    monkeypatch.setattr(window, "createGMCProject", gmcProjects.append)
+    _newProjectWithEnvironment(window, tmp_path, monkeypatch, createGMC=True)
+    project = window.storedData.getProjectbyPath(str(tmp_path / "pinball"))
+    assert project is not None and project.virtualEnvironment is None
+    assert window.storedData.environmentList == [] and gmcProjects == []
+    assert "'pinball' was created without an environment" in window.outputViewer.toPlainText()
+
+
+def test_createNewProjectMakesGMCOnceItsEnvironmentIsMade(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr(uvManager, "locateUV", lambda: "uv")
+    window = _window(qtbot, StorageProcessor())
+    pending = []
+    monkeypatch.setattr(window.commandQueue, "run", lambda _commands, onDone: pending.append(onDone))
+    gmcProjects = []
+    monkeypatch.setattr(window, "createGMCProject", gmcProjects.append)
+    _newProjectWithEnvironment(window, tmp_path, monkeypatch, createGMC=True)
+    assert gmcProjects == []
+    pending[0](True)
+    assert [project.projectName for project in gmcProjects] == ["pinball"]
+    assert gmcProjects[0].virtualEnvironment == "fresh"
+
+
+def test_applyPlanTellsWhenItIsDone(qtbot, tmp_path, monkeypatch):
+    window = _window(qtbot, StorageProcessor())
+    results = []
+
+    def noUV():
+        raise uvManager.UvNotFoundError("uv is not installed")
+
+    monkeypatch.setattr(uvManager, "locateUV", noUV)
+    monkeypatch.setattr(window, "_error", lambda _message: None)
+    window._applyPlan(venvDialogData("env", tmp_path / "env", "3.13", "0.80.0", [], [], []), True, results.append)
+    assert results == [False]

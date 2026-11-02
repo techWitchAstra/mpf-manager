@@ -1,4 +1,4 @@
-"""Main window: environments tab, projects tab and a shared output outputLogger."""
+"""Main window: the managers' pages, with the Project Manager for running the open project, and its output log"""
 
 #   mainWindow - Responsible for the main GUI window containing everything
 #
@@ -13,6 +13,7 @@ from __future__ import annotations
 # The following imports the needed standard python libraries
 import shlex
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -20,25 +21,32 @@ from packaging.version import Version
 
 # The following imports the used Qt assets for Main Window
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase, QStandardItemModel
+from PySide6.QtGui import QAction, QDesktopServices, QFontDatabase, QIcon, QKeySequence, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -56,6 +64,11 @@ from mpfmanager.ui.dialogs import (
     mpfProjectCreationDialog,
     venvDialogData,
 )
+from mpfmanager.ui.managerTabs import PROJECT_MANAGER_TAB, SHOW_MANAGER_TAB, ManagerTabBar
+from mpfmanager.ui.projectPicker import ProjectPickerDialog
+from mpfmanager.ui.ribbon import Ribbon, actionButton, ribbonIcon
+from mpfmanager.ui.showViewer import ShowViewerWindow
+from mpfmanager.ui.theme import THEME_LABELS, applyTheme, setStatusBadge, themeName
 from mpfmanager.ui.uiWorkers import CommandQueue, RunningProcess, runInThread
 
 
@@ -85,7 +98,71 @@ def _openMPFmachineFolder(folderPath: Path) -> None:
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(folderPath)))
 
 
-# The following defines the main window for MPF Manager
+# The following describes a project's state: running, missing, without a config, or ready to run
+def projectStatus(project: Project, runningProcesses: dict[str, dict[str, RunningProcess]]) -> str:
+    path = Path(project.projectPath)
+    if project.projectPath in runningProcesses:
+        return f"Running ({' + '.join(runningProcesses[project.projectPath])})"
+    if not path.exists():
+        return "Missing"
+    if not mpfProjects.checkMPFProjectAtPath(path):
+        return "No config/config.yaml"
+    return "OK"
+
+
+# The following is the window's title, followed by the open project's name
+WINDOW_TITLE = "MPF-Manager"
+
+# The following are the details of the open project shown on the Project Manager, with their labels
+OVERVIEW_FIELDS = {
+    "path": "Machine folder",
+    "environment": "Environment",
+    "config": "Config version",
+    "gmc": "GMC project",
+    "status": "Status",
+}
+
+# The following are the tabs of the Project Manager's ribbon: running the project, and the project itself
+RUN_RIBBON_TAB, PROJECT_RIBBON_TAB = 0, 1
+
+# The following is the smallest size the window grows to for the Show Manager, which shows the grid and playfield
+SHOW_MANAGER_SIZE = (1400, 760)
+
+
+# The following dialog lists the MPF+Python environments, with what can be done with them.  It is opened from the
+# Settings menu, and stays open beside the window, so the output log can be seen while an environment is made
+class EnvironmentsDialog(QDialog):
+    def __init__(self, table: QTableWidget, actions: list[QAction | None], parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("MPF+Python Environments")
+        self.setModal(False)
+        self.resize(880, 380)
+        # The buttons sit on a panel of their own, as the ribbon's do
+        toolCard = QWidget()
+        toolCard.setObjectName("toolCard")
+        toolCard.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        buttons = QHBoxLayout(toolCard)
+        buttons.setContentsMargins(6, 4, 6, 4)
+        self.buttons: list[QToolButton] = []
+        for action in actions:
+            if action is None:
+                buttons.addStretch()
+                continue
+            button = actionButton(action)
+            buttons.addWidget(button)
+            self.buttons.append(button)
+        closeButtons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        closeButtons.rejected.connect(self.close)
+        layout = QVBoxLayout(self)
+        layout.addWidget(toolCard)
+        layout.addWidget(table, 1)
+        layout.addWidget(closeButtons)
+
+
+# The following defines the main window for MPF Manager.  It holds each manager as a page, switched with the tabs down
+# its left edge: the Project Manager, for running the project that is open, and the Show Manager.  Each page has its
+# own ribbon and menus, and the menu bar shows the menus of the page shown.  A project is chosen in a dialog, at
+# startup or from File > Open project
 class MainWindow(QMainWindow):
     # The following function initializes the main window upon inital call
     def __init__(self, storedData: StorageProcessor | None = None):
@@ -95,152 +172,350 @@ class MainWindow(QMainWindow):
         self.commandQueue.outputSignal.connect(self.outputLogger)
         self.commandQueue.busyChangedSignal.connect(self._updateButtons)
         self.runningProcesses: dict[str, dict[str, RunningProcess]] = {}
+        self.showViewerWindow: ShowViewerWindow | None = None
+        self.currentProject: Project | None = None
 
         # The following sets up the application window
-        self.setWindowTitle("MPF-Manager")
+        self.setWindowTitle(WINDOW_TITLE)
         self.resize(1000, 680)
-        self._buildMenu()
 
-        # The following sets up the Application Focus Tabs
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._buildEnvironmentsTab(), "MPF+Python Environments")
-        self.tabs.addTab(self._buildProjectsTab(), "MPF Projects")
-
-        # The following sets up the output viewer console
+        # The following sets up the run options, the environments list, and the output viewer console
+        self._buildRunOptions()
+        self.venvAvailableTable = _table(["Name", "MPF", "Python", "Add-Ons", "Status", "Virtual Environment Path"])
+        self.venvAvailableTable.itemSelectionChanged.connect(self._updateButtons)
         self.outputViewer = QPlainTextEdit()
         self.outputViewer.setReadOnly(True)
         self.outputViewer.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
         self.outputViewer.setMaximumBlockCount(5000)
 
-        # The following assembles the outputViewer and the Tabs together
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(self.tabs)
-        splitter.addWidget(self.outputViewer)
-        splitter.setSizes([440, 240])
-        self.setCentralWidget(splitter)
+        # The following builds the Project Manager's ribbon, and the dialog the environments are managed in
+        self._buildRibbon()
+        self.environmentsDialog = EnvironmentsDialog(
+            self.venvAvailableTable,
+            [
+                self.newVENVAction,
+                self.changeVENVAction,
+                self.verifyVENVAction,
+                self.openVENVAction,
+                self.openSourceAction,
+                None,
+                self.deleteVENVAction,
+            ],
+            self,
+        )
+        (
+            self.newVENVButton,
+            self.changeVENVButton,
+            self.verifyVENVButton,
+            self.openVENVButton,
+            self.openSourceButton,
+            self.deleteVENVButton,
+        ) = self.environmentsDialog.buttons
 
+        # The following assembles the open project's overview and the output viewer, under the ribbon
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self._buildOverview())
+        splitter.addWidget(self.outputViewer)
+        splitter.setSizes([300, 300])
+        self.projectManagerPage = QWidget()
+        projectManagerLayout = QVBoxLayout(self.projectManagerPage)
+        projectManagerLayout.setContentsMargins(4, 0, 4, 4)
+        projectManagerLayout.addWidget(self.ribbon)
+        projectManagerLayout.addWidget(splitter, 1)
+
+        # The following puts the managers' pages beside the tabs down the left edge that switch between them
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.projectManagerPage)
+        self.managerTabs = ManagerTabBar(PROJECT_MANAGER_TAB)
+        self.managerTabs.managerChosen.connect(self._managerChosen)
+        windowWidget = QWidget()
+        windowLayout = QHBoxLayout(windowWidget)
+        windowLayout.setContentsMargins(0, 0, 0, 0)
+        windowLayout.setSpacing(0)
+        windowLayout.addWidget(self.managerTabs, 0, Qt.AlignmentFlag.AlignTop)
+        windowLayout.addWidget(self.pages, 1)
+        self.setCentralWidget(windowWidget)
+
+        self._buildMenu()
+        self._setPageMenus(self.projectManagerMenus)
+        self._updateRunOptions()
         self.refreshMainWindow()
 
-    # The following function builds out the menu for the application
-    def _buildMenu(self) -> None:
-        menu = self.menuBar().addMenu("&File")
-        settings = QAction("&Settings…", self)
-        settings.triggered.connect(self.edit_settings)
-        menu.addAction(settings)
-        open_config = QAction("Open config &folder", self)
-        open_config.triggered.connect(lambda: _openMPFmachineFolder(self.storedData.homePath))
-        menu.addAction(open_config)
-        menu.addSeparator()
-        quit_action = QAction("&Quit", self)
-        quit_action.triggered.connect(self.close)
-        menu.addAction(quit_action)
+    # The following makes an action for the Project Manager, with its tooltip and icon
+    def _action(
+        self, text: str, tooltip: str = "", themeIcon: QIcon.ThemeIcon | None = None, symbol: str | None = None
+    ) -> QAction:
+        action = QAction(text, self)
+        if tooltip:
+            action.setToolTip(tooltip)
+            action.setStatusTip(tooltip)
+        if symbol is not None:
+            action.setIcon(ribbonIcon(themeIcon, symbol))
+        return action
 
-    # The following builds the tab for managing mpf+python environments
-    def _buildEnvironmentsTab(self) -> QWidget:
-        self.venvAvailableTable = _table(["Name", "MPF", "Python", "Add-Ons", "Status", "Virtual Environment Path"])
-        self.venvAvailableTable.itemSelectionChanged.connect(self._updateButtons)
+    # The following builds the Project Manager's ribbon: a tab for running the project, and one for the project.  Each
+    # button is an action, so the menus offer the same actions.  The environments' actions are shown in their dialog
+    def _buildRibbon(self) -> None:
+        ThemeIcon = QIcon.ThemeIcon
 
-        # The following adds a button to create a new vitual environment
-        self.newVENVButton = QPushButton("New environment…")
-        self.newVENVButton.clicked.connect(self.createVENVButton)
+        # The following are the actions for projects
+        self.openProjectAction = self._action(
+            "Open project…", "Choose a project, make a new one, or open a machine folder", ThemeIcon.DocumentOpen, "📂"
+        )
+        self.openProjectAction.triggered.connect(lambda: self.showProjectPicker())
+        self.newProjectAction = self._action("New project…", "Create a new MPF project", ThemeIcon.DocumentNew, "✚")
+        self.newProjectAction.triggered.connect(lambda: self.openProject(self.createNewProject()))
+        self.closeProjectAction = self._action("Close project", "Close the project, leaving no project open")
+        self.closeProjectAction.triggered.connect(self.closeProject)
+        self.openProjectFolderAction = self._action(
+            "Machine folder", "Open the project's MPF machine folder", ThemeIcon.FolderOpen, "🗀"
+        )
+        self.openProjectFolderAction.triggered.connect(
+            lambda: (p := self.selectedProject()) and _openMPFmachineFolder(Path(p.projectPath))
+        )
+        self.viewShowsAction = self._action(
+            "View shows", "Open the project's show files in the Show Manager", None, "✦"
+        )
+        self.viewShowsAction.triggered.connect(self.openShowViewer)
+        self.createGMCAction = self._action(
+            "Create GMC project…",
+            "Generate a blank Godot project with mpf-gmc configured in the machine folder",
+            None,
+            "◈",
+        )
+        self.createGMCAction.triggered.connect(lambda: self.createGMCProject())
+        self.manageEnvironmentsAction = self._action(
+            "Environments…", "Make, change and remove MPF+Python environments", None, "⚙"
+        )
+        self.manageEnvironmentsAction.triggered.connect(self.showEnvironments)
 
-        # The following creates a new button to change the MPF version of a selected virtual environment
-        self.changeVENVButton = QPushButton("Change MPF version…")
-        self.changeVENVButton.clicked.connect(self.changeVENVmpf)
-
-        # The following creates a new button to view the package versions from the virtual environment
-        self.verifyVENVButton = QPushButton("Verify Package Versions")
-        self.verifyVENVButton.setToolTip("Read installed package versions from the environment")
-        self.verifyVENVButton.clicked.connect(self.verifyVENVPackages)
-
-        # The following creates a button that opens the containing folder for a virtual environment
-        self.openVENVButton = QPushButton("Open Virtual Environment's Folder")
-        self.openVENVButton.setToolTip("Opens the folder containing the selected Virtual Environment")
-        self.openVENVButton.clicked.connect(
+        # The following are the actions for environments, shown in the environments dialog
+        self.newVENVAction = self._action(
+            "New environment…", "Create a new MPF+Python environment", ThemeIcon.DocumentNew, "✚"
+        )
+        self.newVENVAction.triggered.connect(self.createVENVButton)
+        self.changeVENVAction = self._action(
+            "Change MPF version…", "Change the MPF version or add-ons of the selected environment", None, "⇅"
+        )
+        self.changeVENVAction.triggered.connect(self.changeVENVmpf)
+        self.verifyVENVAction = self._action(
+            "Verify packages", "Read installed package versions from the environment", ThemeIcon.SystemSearch, "✓"
+        )
+        self.verifyVENVAction.triggered.connect(self.verifyVENVPackages)
+        self.openVENVAction = self._action(
+            "Open environment folder",
+            "Opens the folder containing the selected Virtual Environment",
+            ThemeIcon.FolderOpen,
+            "🗀",
+        )
+        self.openVENVAction.triggered.connect(
             lambda: (
                 (selectedEnvironment := self.selectedEnvironment())
                 and _openMPFmachineFolder(selectedEnvironment.venvPath)
             )
         )
-
-        # The following creates a button that opens the mpf source folder of an editable environment
-        self.openSourceButton = QPushButton("Open MPF Source Folder")
-        self.openSourceButton.setToolTip("Opens the local MPF source folder an editable environment runs from")
-        self.openSourceButton.clicked.connect(
+        self.openSourceAction = self._action(
+            "Open MPF source folder",
+            "Opens the local MPF source folder an editable environment runs from",
+            ThemeIcon.FolderOpen,
+            "🗀",
+        )
+        self.openSourceAction.triggered.connect(
             lambda: (
                 (selectedEnvironment := self.selectedEnvironment())
                 and selectedEnvironment.isEditable
                 and _openMPFmachineFolder(Path(selectedEnvironment.editableMPFPath))
             )
         )
+        self.deleteVENVAction = self._action("Delete…", "Delete the selected environment", ThemeIcon.EditDelete, "✕")
+        self.deleteVENVAction.triggered.connect(self.deleteVENV)
 
-        # The following creates a button to delete a selected virtual environment
-        self.deleteVENVButton = QPushButton("Delete…")
-        self.deleteVENVButton.clicked.connect(self.deleteVENV)
+        # The following are the actions for running the project and its run profiles
+        self.runMPFAction = self._action(
+            "Run MPF", "Run the project with the run options", ThemeIcon.MediaPlaybackStart, "▶"
+        )
+        self.runMPFAction.triggered.connect(self.runMPFProject)
+        self.stopMPFAction = self._action(
+            "Stop MPF", "Stop the project's running game", ThemeIcon.MediaPlaybackStop, "■"
+        )
+        self.stopMPFAction.triggered.connect(self.stopMPFProject)
+        self.runProfileAction = self._action("Run profile", "Run the chosen run profile", None, "▶")
+        self.runProfileAction.triggered.connect(lambda: self.runRunProfile(self.selectedRunProfile()))
+        self.loadRunProfileAction = self._action(
+            "Load into options", "Set the run options to match the chosen run profile", None, "⇩"
+        )
+        self.loadRunProfileAction.triggered.connect(lambda: self.loadRunProfile(self.selectedRunProfile()))
+        self.saveRunProfileAction = self._action(
+            "Save as profile…",
+            "Save the run options as a run profile of the project",
+            ThemeIcon.DocumentSave,
+            "💾",
+        )
+        self.saveRunProfileAction.triggered.connect(self.saveRunProfile)
+        self.deleteRunProfileAction = self._action(
+            "Delete profile", "Delete the chosen run profile", ThemeIcon.EditDelete, "✕"
+        )
+        self.deleteRunProfileAction.triggered.connect(self.deleteRunProfile)
 
-        # The following creates a box to hold the buttons related to virtualEnvironments
-        venvButtons = QHBoxLayout()
-        for currentButton in (
-            self.newVENVButton,
-            self.changeVENVButton,
-            self.verifyVENVButton,
-            self.openVENVButton,
-            self.openSourceButton,
-        ):
-            venvButtons.addWidget(currentButton)
-        venvButtons.addStretch()
-        venvButtons.addWidget(self.deleteVENVButton)
+        # The following chooses the environment the project runs in
+        self.environmentOption = QComboBox()
+        self.environmentOption.setMinimumWidth(240)
+        self.environmentOption.setToolTip("The MPF+Python environment the project runs in")
+        self.environmentOption.currentIndexChanged.connect(self._environmentChosen)
 
-        # The following lays out the virtual environment tab
-        venvTab = QWidget()
-        venvLayout = QVBoxLayout(venvTab)
-        venvLayout.addWidget(self.venvAvailableTable)
-        venvLayout.addLayout(venvButtons)
-        return venvTab
+        self.ribbon = Ribbon()
+        runTab = self.ribbon.addRibbonTab("Run")
+        runGroup = runTab.addGroup("Run")
+        self.runMPFButton = runGroup.addLargeAction(self.runMPFAction)
+        self.stopMPFButton = runGroup.addLargeAction(self.stopMPFAction)
+        optionsGroup = runTab.addGroup("Options")
+        optionsGroup.addSmallWidget(self.runModeOption, "Run:")
+        optionsGroup.addSmallWidget(self.hardwareOption, "Hardware:")
+        optionsGroup.addSmallWidget(self.extraRunArguments, "Arguments:")
+        for runCheckBox in (self.runMediaControllerOption, self.runMPFMonitorCheckBox, self.openGodotEditorCheckBox):
+            optionsGroup.addSmallWidget(runCheckBox)
+        profilesGroup = runTab.addGroup("Run profiles")
+        profilesGroup.addSmallWidget(self.runProfileOption, "Profile:")
+        profilesGroup.addSmallWidget(self.runAtStartupCheckBox)
+        self.runProfileButton = profilesGroup.addSmallAction(self.runProfileAction)
+        self.loadRunProfileButton = profilesGroup.addSmallAction(self.loadRunProfileAction)
+        self.saveRunProfileButton = profilesGroup.addSmallAction(self.saveRunProfileAction)
+        self.deleteRunProfileButton = profilesGroup.addSmallAction(self.deleteRunProfileAction)
 
-    # The following function is used to build to the projects tab
-    def _buildProjectsTab(self) -> QWidget:
+        projectTab = self.ribbon.addRibbonTab("Project")
+        projectGroup = projectTab.addGroup("Project")
+        self.openProjectButton = projectGroup.addLargeAction(self.openProjectAction)
+        self.newprojectButton = projectGroup.addLargeAction(self.newProjectAction)
+        openGroup = projectTab.addGroup("Open")
+        self.openProjectFolderButton = openGroup.addLargeAction(self.openProjectFolderAction)
+        self.viewShowsButton = openGroup.addLargeAction(self.viewShowsAction)
+        environmentGroup = projectTab.addGroup("Environment")
+        environmentGroup.addSmallWidget(self.environmentOption, "Runs in:")
+        self.manageEnvironmentsButton = environmentGroup.addSmallAction(self.manageEnvironmentsAction)
+        godotGroup = projectTab.addGroup("Godot")
+        self.createGMCButton = godotGroup.addLargeAction(self.createGMCAction)
 
-        # The following builds the project list table
-        self.projectListTable = _table(["Project Name", "Environment", "Config", "Verification Status", "Path"])
-        self.projectListTable.itemSelectionChanged.connect(self._updateButtons)
+    # The following builds out the Project Manager's menus, which the menu bar shows while the Project Manager is shown
+    def _buildMenu(self) -> None:
+        self.settingsAction = QAction("&Preferences…", self)
+        self.settingsAction.triggered.connect(self.edit_settings)
+        openConfigAction = QAction("Open config &folder", self)
+        openConfigAction.triggered.connect(lambda: _openMPFmachineFolder(self.storedData.homePath))
+        self.quitAction = QAction("&Quit", self)
+        self.quitAction.setShortcuts(
+            QKeySequence.keyBindings(QKeySequence.StandardKey.Quit) or [QKeySequence("Ctrl+Q")]
+        )
+        self.quitAction.triggered.connect(self.close)
+        self.openProjectAction.setShortcut(QKeySequence(QKeySequence.StandardKey.Open))
+        self.newProjectAction.setShortcut(QKeySequence(QKeySequence.StandardKey.New))
+        self.runMPFAction.setShortcut(QKeySequence("Ctrl+R"))
+        self.stopMPFAction.setShortcut(QKeySequence("Ctrl+."))
 
-        # The following adds a button for new MPF Projects
-        self.newprojectButton = QPushButton("New MPF project…")
-        self.newprojectButton.clicked.connect(self.createNewProject)
+        fileMenu = QMenu("&File", self)
+        fileMenu.addActions([self.openProjectAction, self.newProjectAction, self.closeProjectAction])
+        fileMenu.addSeparator()
+        fileMenu.addAction(openConfigAction)
+        fileMenu.addSeparator()
+        fileMenu.addAction(self.quitAction)
 
-        # The following adds a button to add an existing MPF project via the machine folder
-        self.addProjectButton = QPushButton("Add existing MPF Project…")
-        self.addProjectButton.clicked.connect(self.addExistingProject)
-        self.addProjectButton.setToolTip("Add an Existing MPF Project via the machine directory")
+        projectMenu = QMenu("&Project", self)
+        projectMenu.addActions([self.openProjectFolderAction, self.viewShowsAction, self.createGMCAction])
 
-        # The following adds a button to open a selected MPF machine folder
-        self.openProjectFolderButton = QPushButton("Open MPF machine folder")
-        self.openProjectFolderButton.clicked.connect(
-            lambda: (p := self.selectedProject()) and _openMPFmachineFolder(Path(p.projectPath))
+        runMenu = QMenu("&Run", self)
+        runMenu.addActions([self.runMPFAction, self.stopMPFAction])
+        runMenu.addSeparator()
+        runMenu.addActions(
+            [self.runProfileAction, self.loadRunProfileAction, self.saveRunProfileAction, self.deleteRunProfileAction]
         )
 
-        # The following adds a button to generate a GMC godot project for the selected project
-        self.createGMCButton = QPushButton("Create GMC project…")
-        self.createGMCButton.setToolTip("Generate a blank Godot project with mpf-gmc configured in the machine folder")
-        self.createGMCButton.clicked.connect(lambda: self.createGMCProject())
+        settingsMenu = QMenu("&Settings", self)
+        settingsMenu.addActions([self.manageEnvironmentsAction, self.settingsAction])
 
-        # The following adds a button to remove a mpf project from the list
-        self.removeProjectButton = QPushButton("Remove from list")
-        self.removeProjectButton.clicked.connect(self.removeProject)
+        # The following switch between the managers, and show and hide the parts of the Project Manager
+        self.projectManagerAction = QAction("Project Manager", self)
+        self.projectManagerAction.setShortcut(QKeySequence("Ctrl+1"))
+        self.projectManagerAction.triggered.connect(self.showProjectManager)
+        self.showManagerAction = QAction("Show Manager", self)
+        self.showManagerAction.setShortcut(QKeySequence("Ctrl+2"))
+        self.showManagerAction.triggered.connect(self.openShowViewer)
+        self.showRibbonAction = QAction("Ribbon", self)
+        self.showRibbonAction.setCheckable(True)
+        self.showRibbonAction.setChecked(True)
+        self.showRibbonAction.toggled.connect(self.ribbon.setVisible)
+        self.showOutputAction = QAction("Output log", self)
+        self.showOutputAction.setCheckable(True)
+        self.showOutputAction.setChecked(True)
+        self.showOutputAction.toggled.connect(self.outputViewer.setVisible)
+        viewMenu = QMenu("&View", self)
+        viewMenu.addActions([self.projectManagerAction, self.showManagerAction])
+        viewMenu.addSeparator()
+        viewMenu.addActions([self.showRibbonAction, self.showOutputAction])
 
-        # The following sets up a layout for the project management buttons
-        projectManagementButtonBar = QHBoxLayout()
-        for currentButton in (
-            self.newprojectButton,
-            self.addProjectButton,
-            self.openProjectFolderButton,
-            self.createGMCButton,
-        ):
-            projectManagementButtonBar.addWidget(currentButton)
-        projectManagementButtonBar.addStretch()
-        projectManagementButtonBar.addWidget(self.removeProjectButton)
+        self.projectManagerMenus = [fileMenu, projectMenu, runMenu, settingsMenu, viewMenu]
+        # The managers can be switched between from either page's menus
+        self.addActions([self.projectManagerAction, self.showManagerAction])
 
+    # The following shows a page's menus on the menu bar
+    def _setPageMenus(self, menus: list[QMenu]) -> None:
+        menuBar = self.menuBar()
+        menuBar.clear()
+        for menu in menus:
+            menuBar.addMenu(menu)
+
+    # The following switches to the manager chosen on the left edge
+    def _managerChosen(self, index: int) -> None:
+        if index == PROJECT_MANAGER_TAB:
+            self.showProjectManager()
+        elif index == SHOW_MANAGER_TAB:
+            self.openShowViewer()
+
+    # The following builds the overview of the open project: where it is, what it runs in, and how it is.  Without a
+    # project, it asks for one to be opened
+    def _buildOverview(self) -> QWidget:
+        self.overviewLabels: dict[str, QLabel] = {}
+        overviewForm = QFormLayout()
+        for field, label in OVERVIEW_FIELDS.items():
+            valueLabel = QLabel()
+            valueLabel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            valueLabel.setWordWrap(True)
+            overviewForm.addRow(f"{label}:", valueLabel)
+            self.overviewLabels[field] = valueLabel
+        self.projectHeading = QLabel()
+        self.projectHeading.setObjectName("projectHeading")
+        headingFont = self.projectHeading.font()
+        headingFont.setPointSizeF(headingFont.pointSizeF() * 1.5)
+        headingFont.setBold(True)
+        self.projectHeading.setFont(headingFont)
+        self.projectDetails = QWidget()
+        self.projectDetails.setLayout(overviewForm)
+
+        self.noProjectPrompt = QWidget()
+        promptLayout = QVBoxLayout(self.noProjectPrompt)
+        promptLayout.addStretch()
+        promptLabel = QLabel("Open a project to get started")
+        promptLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        promptLabel.setFont(headingFont)
+        self.promptOpenButton = QPushButton("Open project…")
+        self.promptOpenButton.setObjectName("primary")
+        self.promptOpenButton.clicked.connect(lambda: self.showProjectPicker())
+        promptLayout.addWidget(promptLabel)
+        promptLayout.addWidget(self.promptOpenButton, 0, Qt.AlignmentFlag.AlignCenter)
+        promptLayout.addStretch()
+
+        # The overview sits on a panel, so the project's details stand out
+        overview = QWidget()
+        overview.setObjectName("overviewCard")
+        overview.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        overviewLayout = QVBoxLayout(overview)
+        overviewLayout.setContentsMargins(18, 14, 18, 14)
+        overviewLayout.addWidget(self.projectHeading)
+        overviewLayout.addWidget(self.projectDetails)
+        overviewLayout.addWidget(self.noProjectPrompt, 1)
+        overviewLayout.addStretch()
+        return overview
+
+    # The following builds the run options and run profiles the Run tab of the ribbon holds
+    def _buildRunOptions(self) -> None:
         # The following sets up the combination box for the run mode options
         self.runModeOption = QComboBox()
         for label, mode in mpfProjects.RUN_MODES.items():
@@ -261,86 +536,25 @@ class MainWindow(QMainWindow):
         # The following adds an extra text space for additional arguments
         self.extraRunArguments = QLineEdit()
         self.extraRunArguments.setPlaceholderText("extra arguments, e.g. -v")
-
-        # The following adds a run MPF Button
-        self.runMPFButton = QPushButton("Run MPF")
-        self.runMPFButton.clicked.connect(self.runMPFProject)
-
-        # The following adds a stop button for MPF
-        self.stopMPFButton = QPushButton("Stop MPF")
-        self.stopMPFButton.clicked.connect(self.stopMPFProject)
+        self.extraRunArguments.setMinimumWidth(160)
 
         self.runMPFMonitorCheckBox = QCheckBox("Run MPF-Monitor?")
         self.runMPFMonitorCheckBox.setToolTip("Check to run monitor when opening MPF")
-        self.runModeOption.currentIndexChanged.connect(
-            self._updateRunOptions
-        )  # The following lets the godot project be opened in the editor rather than run
+        self.runModeOption.currentIndexChanged.connect(self._updateRunOptions)
+
+        # The following lets the godot project be opened in the editor rather than run
         self.openGodotEditorCheckBox = QCheckBox("Open in Godot editor")
         self.openGodotEditorCheckBox.setToolTip("Opens the GMC project in the Godot editor instead of running it")
-        self.projectListTable.itemSelectionChanged.connect(self._updateRunOptions)
 
-        # The following lays out the run configuration buttons
-        runConfigurationLayout = QHBoxLayout()
-        runConfigurationLayout.addWidget(QLabel("Run:"))
-        runConfigurationLayout.addWidget(self.runModeOption)
-        runConfigurationLayout.addWidget(self.hardwareOption)
-        runConfigurationLayout.addWidget(self.runMediaControllerOption)
-        runConfigurationLayout.addWidget(self.runMPFMonitorCheckBox)
-        runConfigurationLayout.addWidget(self.openGodotEditorCheckBox)
-        runConfigurationLayout.addWidget(self.extraRunArguments, 1)
-        runConfigurationLayout.addWidget(self.runMPFButton)
-        runConfigurationLayout.addWidget(self.stopMPFButton)
-
-        # The following sets up the list of saved run profiles
+        # The following sets up the list of the project's saved run profiles
         self.runProfileOption = QComboBox()
-        self.runProfileOption.setMinimumWidth(220)
+        self.runProfileOption.setMinimumWidth(180)
         self.runProfileOption.currentIndexChanged.connect(self._updateButtons)
-
-        # The following adds a button to run the chosen run profile
-        self.runProfileButton = QPushButton("Run profile")
-        self.runProfileButton.clicked.connect(lambda: self.runRunProfile(self.selectedRunProfile()))
-
-        # The following adds a button to save the selected project and the run options above as a run profile
-        self.saveRunProfileButton = QPushButton("Save as profile…")
-        self.saveRunProfileButton.setToolTip("Save the selected project and the run options above as a run profile")
-        self.saveRunProfileButton.clicked.connect(self.saveRunProfile)
-
-        # The following adds a button to put a run profile's project and options back into the run options
-        self.loadRunProfileButton = QPushButton("Load into options")
-        self.loadRunProfileButton.setToolTip("Select the profile's project and set the run options above to match it")
-        self.loadRunProfileButton.clicked.connect(lambda: self.loadRunProfile(self.selectedRunProfile()))
-
-        # The following adds a button to delete the chosen run profile
-        self.deleteRunProfileButton = QPushButton("Delete profile")
-        self.deleteRunProfileButton.clicked.connect(self.deleteRunProfile)
 
         # The following lets the chosen run profile be run when mpf-manager starts
         self.runAtStartupCheckBox = QCheckBox("Run at startup")
         self.runAtStartupCheckBox.setToolTip("Run this profile automatically when MPF-Manager starts")
         self.runAtStartupCheckBox.toggled.connect(self._setRunAtStartup)
-
-        # The following lays out the run profile controls
-        runProfileLayout = QHBoxLayout()
-        runProfileLayout.addWidget(QLabel("Run profile:"))
-        runProfileLayout.addWidget(self.runProfileOption, 1)
-        runProfileLayout.addWidget(self.runProfileButton)
-        runProfileLayout.addWidget(self.loadRunProfileButton)
-        runProfileLayout.addWidget(self.saveRunProfileButton)
-        runProfileLayout.addWidget(self.runAtStartupCheckBox)
-        runProfileLayout.addStretch()
-        runProfileLayout.addWidget(self.deleteRunProfileButton)
-
-        # The following puts all the project tab elements together
-        projectTabPage = QWidget()
-        projectTabLayout = QVBoxLayout(projectTabPage)
-        projectTabLayout.addWidget(self.projectListTable)
-        projectTabLayout.addLayout(projectManagementButtonBar)
-        projectTabLayout.addLayout(runConfigurationLayout)
-        projectTabLayout.addLayout(runProfileLayout)
-
-        self._updateRunOptions()
-
-        return projectTabPage
 
     # The following utilities help accomplish functions in the mainWindow
 
@@ -358,28 +572,78 @@ class MainWindow(QMainWindow):
             return None
         return self.storedData.getVENVbyName(selectedItem.data(Qt.ItemDataRole.UserRole))
 
-    # The following outputs the selected project
+    # The following returns the open project, while it is still in the list of projects
     def selectedProject(self) -> Project | None:
-        row = self.projectListTable.currentRow()
-        if row < 0 or not self.projectListTable.selectedItems():
+        if self.currentProject is None:
             return None
-        selectedProjectItem = self.projectListTable.item(row, 0)
-        if selectedProjectItem is None:
-            return None
-        return self.storedData.getProjectbyPath(selectedProjectItem.data(Qt.ItemDataRole.UserRole))
+        return self.storedData.getProjectbyPath(self.currentProject.projectPath)
 
     # The following outputs the chosen run profile
     def selectedRunProfile(self) -> RunProfile | None:
         return self.storedData.getRunProfileByName(self.runProfileOption.currentData())
 
-    # The following selects a project's row in the project table
-    def _selectProjectRow(self, projectPath: str) -> bool:
-        for row in range(self.projectListTable.rowCount()):
-            projectItem = self.projectListTable.item(row, 0)
-            if projectItem is not None and projectItem.data(Qt.ItemDataRole.UserRole) == projectPath:
-                self.projectListTable.selectRow(row)
-                return True
-        return False
+    # The following opens a project, or closes the one open when given none.  The Show Manager follows it to the
+    # project's machine, asking first if it has changes that are not saved
+    def openProject(self, project: Project | None) -> bool:
+        if project is not None and self.storedData.getProjectbyPath(project.projectPath) is None:
+            return False
+        if self.showViewerWindow is not None:
+            machinePath = Path(project.projectPath) if project else None
+            if machinePath != self.showViewerWindow.machinePath:
+                if not self.showViewerWindow.confirmDiscardChanges():
+                    return False
+                self.showViewerWindow.setMachinePath(machinePath)
+        self.currentProject = project
+        self.refreshMainWindow()
+        self._updateWindowTitle()
+        self._updateRunOptions()
+        if project is not None:
+            self.outputLogger(f"Opened '{project.projectName}' at {project.projectPath}")
+        return True
+
+    def closeProject(self) -> None:
+        self.openProject(None)
+
+    # The following asks which project to open: one of the projects, a new one, or a machine folder.  It returns
+    # whether one was opened
+    def showProjectPicker(self) -> bool:
+        picker = ProjectPickerDialog(
+            self.storedData,
+            createProject=self.createNewProject,
+            addProject=self.addExistingProject,
+            projectStatus=lambda project: projectStatus(project, self.runningProcesses),
+            parentWidget=self,
+        )
+        if not picker.exec() or picker.chosenProject is None:
+            self.refreshMainWindow()
+            return False
+        return self.openProject(picker.chosenProject)
+
+    # The following starts MPF-Manager: it runs the startup run profile if there is one, and otherwise asks which
+    # project to open
+    def startUp(self) -> None:
+        settings = self.storedData.settings
+        if settings.runProfileAtStartup and self.storedData.startupProfile() is not None:
+            self.runStartupProfile()
+            return
+        self.showProjectPicker()
+
+    # The following shows the environments, to make, change or remove them
+    def showEnvironments(self) -> None:
+        self.environmentsDialog.show()
+        self.environmentsDialog.raise_()
+        self.environmentsDialog.activateWindow()
+
+    # The following pairs the open project with the environment chosen in the ribbon
+    def _environmentChosen(self) -> None:
+        project = self.selectedProject()
+        if project is None or self.environmentOption.signalsBlocked():
+            return
+        environmentName = self.environmentOption.currentData()
+        if environmentName != project.virtualEnvironment:
+            self._setProjectEnvironment(project.projectPath, environmentName)
+            self._updateRunOptions()
+            self._updateOverview()
 
     # The following refreshes the main Window
     def refreshMainWindow(self) -> None:
@@ -409,50 +673,68 @@ class MainWindow(QMainWindow):
             if selectedVENV and environment.venvName == selectedVENV.venvName:
                 self.venvAvailableTable.selectRow(row)
 
-        # The following updates the project information table
-        selectedProject = self.selectedProject()
-        self.projectListTable.setRowCount(0)
+        # A project taken off the list is no longer open
+        if self.currentProject is not None and self.selectedProject() is None:
+            self.currentProject = None
+            self._updateWindowTitle()
 
-        for projectTableItem in self.storedData.projectList:
-            row = self.projectListTable.rowCount()
-            path = Path(projectTableItem.projectPath)
-            self.projectListTable.insertRow(row)
-            self.projectListTable.setItem(row, 0, _item(projectTableItem.projectName, projectTableItem.projectPath))
-            combo = environmentPairing(self.storedData, projectTableItem.virtualEnvironment)
-            combo.currentIndexChanged.connect(
-                lambda _i, p=projectTableItem.projectPath, c=combo: self._setProjectEnvironment(p, c.currentData())
-            )
-            self.projectListTable.setCellWidget(row, 1, combo)
-            version = mpfProjects.checkConfigVersion(path)
-            self.projectListTable.setItem(row, 2, _item(f"v{version}" if version else "—"))
-            if projectTableItem.projectPath in self.runningProcesses:
-                runningLabels = self.runningProcesses[projectTableItem.projectPath]
-                status = f"Running ({' + '.join(runningLabels)})"
-            elif not path.exists():
-                status = "Missing"
-            elif not mpfProjects.checkMPFProjectAtPath(path):
-                status = "No config/config.yaml"
-            else:
-                status = "OK"
-            self.projectListTable.setItem(row, 3, _item(status))
-            self.projectListTable.setItem(row, 4, _item(projectTableItem.projectPath))
-            if selectedProject and projectTableItem.projectPath == selectedProject.projectPath:
-                self.projectListTable.selectRow(row)
+        # The following lists the environments the project can run in
+        project = self.selectedProject()
+        self.environmentOption.blockSignals(True)
+        self.environmentOption.clear()
+        pairing = environmentPairing(self.storedData, project.virtualEnvironment if project else None)
+        for index in range(pairing.count()):
+            self.environmentOption.addItem(pairing.itemText(index), pairing.itemData(index))
+        self.environmentOption.setCurrentIndex(pairing.currentIndex())
+        pairing.deleteLater()
+        self.environmentOption.blockSignals(False)
 
-        # The following updates the run profile list, keeping the chosen profile chosen
+        # The following lists the project's run profiles, keeping the chosen profile chosen
         chosenProfileName = self.runProfileOption.currentData()
         self.runProfileOption.blockSignals(True)
         self.runProfileOption.clear()
         for profile in self.storedData.runProfileList:
-            self.runProfileOption.addItem(self._runProfileLabel(profile), profile.profileName)
+            if project is not None and profile.projectPath == project.projectPath:
+                self.runProfileOption.addItem(self._runProfileLabel(profile), profile.profileName)
         self.runProfileOption.setCurrentIndex(max(self.runProfileOption.findData(chosenProfileName), 0))
         self.runProfileOption.blockSignals(False)
+        self._updateOverview()
         self._updateButtons()
+
+    # The following shows the open project's details, or asks for a project to be opened
+    def _updateOverview(self) -> None:
+        project = self.selectedProject()
+        self.projectHeading.setVisible(project is not None)
+        self.projectDetails.setVisible(project is not None)
+        self.noProjectPrompt.setVisible(project is None)
+        if project is None:
+            return
+        self.projectHeading.setText(project.projectName)
+        environment = self.storedData.getVENVbyName(project.virtualEnvironment)
+        if environment is not None:
+            environmentText = (
+                f"{environment.venvName}  (MPF {environment.installedMPFVersion}, Python {environment.installedPython})"
+            )
+        else:
+            environmentText = "None. Choose one on the Project tab of the ribbon"
+        configVersion = mpfProjects.checkConfigVersion(Path(project.projectPath))
+        values = {
+            "path": project.projectPath,
+            "environment": environmentText,
+            "config": f"v{configVersion}" if configVersion else "—",
+            "gmc": project.gmcFolderPath or str(mpfProjects.findGodotProject(Path(project.projectPath)) or "None"),
+            "status": projectStatus(project, self.runningProcesses),
+        }
+        for field, value in values.items():
+            self.overviewLabels[field].setText(value)
+        # The status is a badge: green when the project is ready or running, amber when something is wrong
+        status = values["status"]
+        statusLabel = self.overviewLabels["status"]
+        statusLabel.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        setStatusBadge(statusLabel, "ok" if status == "OK" or status.startswith("Running") else "warn")
 
     # The following describes a run profile for the run profile list
     def _runProfileLabel(self, profile: RunProfile) -> str:
-        project = self.storedData.getProjectbyPath(profile.projectPath)
-        projectName = project.projectName if project else "missing project"
         modeLabel = next(
             (label for label, mode in mpfProjects.RUN_MODES.items() if mode == profile.runMode), profile.runMode
         )
@@ -462,37 +744,37 @@ class MainWindow(QMainWindow):
             and self.storedData.settings.startupRunProfile == profile.profileName
             else ""
         )
-        return f"{profile.profileName}  ({projectName}, {modeLabel}){startupText}"
+        return f"{profile.profileName}  ({modeLabel}){startupText}"
 
     # The Following updates the button States
     def _updateButtons(self) -> None:
         idle = not self.commandQueue.isBusy
         environment = self.selectedEnvironment()
-        self.newVENVButton.setEnabled(idle)
-        for b in (self.changeVENVButton, self.verifyVENVButton, self.deleteVENVButton):
+        self.newVENVAction.setEnabled(idle)
+        for b in (self.changeVENVAction, self.verifyVENVAction, self.deleteVENVAction):
             b.setEnabled(idle and environment is not None and environment.exists)
-        self.deleteVENVButton.setEnabled(idle and environment is not None)
-        self.openVENVButton.setEnabled(environment is not None and environment.exists)
-        self.openSourceButton.setEnabled(environment is not None and environment.isEditable)
+        self.deleteVENVAction.setEnabled(idle and environment is not None)
+        self.openVENVAction.setEnabled(environment is not None and environment.exists)
+        self.openSourceAction.setEnabled(environment is not None and environment.isEditable)
 
-        projectTableItem = self.selectedProject()
-        running = projectTableItem is not None and projectTableItem.projectPath in self.runningProcesses
-        self.openProjectFolderButton.setEnabled(projectTableItem is not None)
-        self.removeProjectButton.setEnabled(projectTableItem is not None and not running)
-        self.runMPFButton.setEnabled(projectTableItem is not None and not running)
-        self.stopMPFButton.setEnabled(running)
-        projectEnvironment = (
-            self.storedData.getVENVbyName(projectTableItem.virtualEnvironment) if projectTableItem else None
-        )
-        self.createGMCButton.setEnabled(idle and mpfProjects.isGMCEligible(projectEnvironment))
+        project = self.selectedProject()
+        running = project is not None and project.projectPath in self.runningProcesses
+        self.closeProjectAction.setEnabled(project is not None)
+        self.openProjectFolderAction.setEnabled(project is not None)
+        self.viewShowsAction.setEnabled(project is not None)
+        self.environmentOption.setEnabled(project is not None)
+        self.runMPFAction.setEnabled(project is not None and not running)
+        self.stopMPFAction.setEnabled(running)
+        projectEnvironment = self.storedData.getVENVbyName(project.virtualEnvironment) if project else None
+        self.createGMCAction.setEnabled(idle and mpfProjects.isGMCEligible(projectEnvironment))
 
         # The following updates the run profile controls for the chosen profile
         runProfile = self.selectedRunProfile()
         profileRunning = runProfile is not None and runProfile.projectPath in self.runningProcesses
-        self.runProfileButton.setEnabled(runProfile is not None and not profileRunning)
-        self.loadRunProfileButton.setEnabled(runProfile is not None)
-        self.deleteRunProfileButton.setEnabled(runProfile is not None)
-        self.saveRunProfileButton.setEnabled(projectTableItem is not None)
+        self.runProfileAction.setEnabled(runProfile is not None and not profileRunning)
+        self.loadRunProfileAction.setEnabled(runProfile is not None)
+        self.deleteRunProfileAction.setEnabled(runProfile is not None)
+        self.saveRunProfileAction.setEnabled(project is not None)
         self.runAtStartupCheckBox.setEnabled(runProfile is not None)
         self.runAtStartupCheckBox.blockSignals(True)
         self.runAtStartupCheckBox.setChecked(runProfile is not None and self.storedData.startupProfile() is runProfile)
@@ -575,12 +857,15 @@ class MainWindow(QMainWindow):
     def createVENVButton(self) -> None:
         dialog = VENVManagementDialog(self.storedData, self)
         if dialog.exec():
-            # Default the next new environment to the folder chosen this time.
-            folder = str(dialog.venvParentFolderPath())
-            if folder != self.storedData.settings.venvDirectory:
-                self.storedData.settings.venvDirectory = folder
-                self.storedData.saveConfiguration()
+            self._rememberVENVFolder(dialog.venvParentFolderPath())
             self._applyDialogPlan(dialog, create=True)
+
+    # The following defaults the next new environment to the folder chosen this time
+    def _rememberVENVFolder(self, folderPath: Path) -> None:
+        folder = str(folderPath)
+        if folder != self.storedData.settings.venvDirectory:
+            self.storedData.settings.venvDirectory = folder
+            self.storedData.saveConfiguration()
 
     # The following changes the MPF related to a selected VENV
     def changeVENVmpf(self) -> None:
@@ -601,7 +886,10 @@ class MainWindow(QMainWindow):
         self._applyPlan(plannedVENV, create)
 
     # The following attempts to create a venv based on the plan via a dialog
-    def _applyPlan(self, plannedVENV: venvDialogData, create: bool) -> None:
+    # When it is done, onDone is told whether it worked, e.g. so a new project can be paired with its environment
+    def _applyPlan(
+        self, plannedVENV: venvDialogData, create: bool, onDone: Callable[[bool], None] | None = None
+    ) -> None:
         try:
             # A github source is cloned (or updated) first, so a failed clone leaves no half made environment
             commandList = list(plannedVENV.sourceCommands)
@@ -618,12 +906,19 @@ class MainWindow(QMainWindow):
             )
         except uvCMDs.UvNotFoundError as exc:
             self._error(str(exc))
+            if onDone is not None:
+                onDone(False)
             return
 
         editablePath = str(plannedVENV.editableMPFPath or "")
 
         # Function to be called when virtual environment creation is attempted
         def done(ok: bool) -> None:
+            applied(ok)
+            if onDone is not None:
+                onDone(ok)
+
+        def applied(ok: bool) -> None:
             # The following is called to output the reason an environment failed to setup
             if not ok:
                 self.outputLogger("Environment setup failed; see the output above.")
@@ -738,31 +1033,55 @@ class MainWindow(QMainWindow):
 
     # project ui actions
 
-    # The following Function creates a new project
-    def createNewProject(self) -> None:
+    # The following Function creates a new project, returning it, or None if it was not made
+    def createNewProject(self) -> Project | None:
         newProjectDialog = mpfProjectCreationDialog(self.storedData, self)
         if not newProjectDialog.exec():
-            return
+            return None
         newProjectPath = newProjectDialog.projectPath()
+        projectName = newProjectDialog.projectName.text().strip()
+        newEnvironment = newProjectDialog.pendingEnvironment()
         try:
-            mpfProjects.createNewMPFProject(newProjectPath, newProjectDialog.projectName.text().strip())
+            mpfProjects.createNewMPFProject(newProjectPath, projectName)
+            # A new environment is paired with the project once it has been made
             self.storedData.addProject(
                 Project(
-                    newProjectDialog.projectName.text().strip(),
+                    projectName,
                     str(newProjectPath),
-                    newProjectDialog.environmentPair.currentData(),
+                    None if newEnvironment else newProjectDialog.environmentPair.currentData(),
                 )
             )
         except (OSError, ValueError) as exc:
             self._error(str(exc))
-            return
+            return None
         self.outputLogger(f"Created MPF project at {newProjectPath}")
-        self.tabs.setCurrentIndex(1)
         self.refreshMainWindow()
-        if newProjectDialog.createGMCCheckBox.isChecked() and (
-            newProject := self.storedData.getProjectbyPath(str(newProjectPath))
-        ):
-            self.createGMCProject(newProject)
+        createGMC = newProjectDialog.createGMCCheckBox.isChecked()
+        newProject = self.storedData.getProjectbyPath(str(newProjectPath))
+        if newEnvironment is None:
+            if createGMC and newProject is not None:
+                self.createGMCProject(newProject)
+            return newProject
+
+        # The following makes the new environment, then pairs the project with it and makes its GMC project
+        def environmentMade(ok: bool) -> None:
+            if not ok:
+                self.outputLogger(
+                    f"'{projectName}' was created without an environment. Choose one on the Project tab of the "
+                    "ribbon once one is set up."
+                )
+                return
+            self._setProjectEnvironment(str(newProjectPath), newEnvironment.venvName)
+            self.outputLogger(f"'{projectName}' now uses the environment '{newEnvironment.venvName}'.")
+            self.refreshMainWindow()
+            if createGMC and (newProject := self.storedData.getProjectbyPath(str(newProjectPath))):
+                self.createGMCProject(newProject)
+
+        if newProjectDialog.newEnvironmentFolder is not None:
+            self._rememberVENVFolder(newProjectDialog.newEnvironmentFolder)
+        self.outputLogger(f"Setting up the environment '{newEnvironment.venvName}' for '{projectName}'…")
+        self._applyPlan(newEnvironment, create=True, onDone=environmentMade)
+        return newProject
 
     # The following generates a GMC godot project for a project (the selected one by default)
     def createGMCProject(self, project: Project | None = None) -> None:
@@ -837,15 +1156,18 @@ class MainWindow(QMainWindow):
         )
 
     # The following is used to create an existing MPF machine by directory
-    def addExistingProject(self) -> None:
+    # It returns the project, which is the one already listed for a folder that is listed
+    def addExistingProject(self) -> Project | None:
         existingMachineFolder = QFileDialog.getExistingDirectory(
             self, "Where is your existing MPF Machine Folder", self.storedData.settings.projectDirectory
         )
         if not existingMachineFolder:
-            return
+            return None
 
         # The following checks to see if a project already exists there, and if not offers to create one.
         pathToCheck = Path(existingMachineFolder)
+        if listedProject := self.storedData.getProjectbyPath(str(pathToCheck)):
+            return listedProject
         if not mpfProjects.checkMPFProjectAtPath(pathToCheck):
             responseDialogForMissingProject = QMessageBox.question(
                 self,
@@ -853,17 +1175,18 @@ class MainWindow(QMainWindow):
                 f"'{pathToCheck}' has no config/config.yaml, so it does not look like an MPF project. Add it anyway?",
             )
             if responseDialogForMissingProject != QMessageBox.StandardButton.Yes:
-                return
+                return None
         try:
             self.storedData.addProject(Project(pathToCheck.name, str(pathToCheck)))
         except ValueError as exc:
             self._error(str(exc))
-            return
+            return None
         self.refreshMainWindow()
+        return self.storedData.getProjectbyPath(str(pathToCheck))
 
-    # The following is used to remove a project from the list
-    def removeProject(self) -> None:
-        projectToRemove = self.selectedProject()
+    # The following takes a project off the list of projects, the open one unless another is given, keeping its files
+    def removeProject(self, project: Project | None = None) -> None:
+        projectToRemove = project or self.selectedProject()
         if projectToRemove:
             self.storedData.removeProject(projectToRemove.projectPath)
             self.outputLogger(f"Removed '{projectToRemove.projectName}' from the list (files were not deleted).")
@@ -911,8 +1234,7 @@ class MainWindow(QMainWindow):
         if profile is None:
             self.outputLogger(f"The startup run profile '{settings.startupRunProfile}' no longer exists.")
             return
-        self.tabs.setCurrentIndex(1)
-        self._selectProjectRow(profile.projectPath)
+        self._openProjectAt(profile.projectPath)
         self.runProfileOption.setCurrentIndex(max(self.runProfileOption.findData(profile.profileName), 0))
         self.runRunProfile(profile)
 
@@ -946,11 +1268,20 @@ class MainWindow(QMainWindow):
         self.refreshMainWindow()
         self.runProfileOption.setCurrentIndex(self.runProfileOption.findData(profileName))
 
-    # The following selects a run profile's project and sets the run options to match the profile
+    # The following opens a project by its machine folder, unless it is the one open, returning whether it is open
+    def _openProjectAt(self, projectPath: str) -> bool:
+        project = self.storedData.getProjectbyPath(projectPath)
+        if project is None:
+            return False
+        if (current := self.selectedProject()) is not None and current.projectPath == project.projectPath:
+            return True
+        return self.openProject(project)
+
+    # The following opens a run profile's project and sets the run options to match the profile
     def loadRunProfile(self, profile: RunProfile | None) -> None:
         if profile is None:
             return
-        if not self._selectProjectRow(profile.projectPath):
+        if not self._openProjectAt(profile.projectPath):
             self._error(f"The project for run profile '{profile.profileName}' is no longer in the project list.")
             return
         modeIndex = self.runModeOption.findData(profile.runMode)
@@ -1108,12 +1439,72 @@ class MainWindow(QMainWindow):
     def edit_settings(self) -> None:
         settingsDialog = SettingsDialog(self.storedData.settings, self, self.storedData.runProfileList)
         if settingsDialog.exec():
+            previousTheme = themeName(self.storedData.settings.theme)
             settingsDialog.applySettings(self.storedData.settings)
             self.storedData.saveConfiguration()
             self.refreshMainWindow()
+            if themeName(self.storedData.settings.theme) != previousTheme:
+                self.applyTheme(self.storedData.settings.theme)
+
+    # The following changes how MPF-Manager looks.  Icons drawn in the theme's colors are drawn again when it is next
+    # opened, so it says so
+    def applyTheme(self, name: str) -> None:
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            chosen = applyTheme(app, name)
+            self.outputLogger(
+                f"Now using the {THEME_LABELS[chosen]} theme. Some icons change once MPF-Manager is opened again."
+            )
+
+    # The following switches to the Show Manager, showing the open project's shows.  Its page is made the first time
+    # it is shown, and keeps its shows and changes while the Project Manager is shown
+    def openShowViewer(self) -> None:
+        selectedProject = self.selectedProject()
+        machinePath = Path(selectedProject.projectPath) if selectedProject else None
+        if self.showViewerWindow is None:
+            self.showViewerWindow = ShowViewerWindow(machinePath, embedded=True)
+            self.showViewerWindow.projectManagerRequested.connect(self.showProjectManager)
+            self.showViewerWindow.windowTitleChanged.connect(self._updateWindowTitle)
+            self.pages.addWidget(self.showViewerWindow)
+            width, height = SHOW_MANAGER_SIZE
+            self.resize(max(self.width(), width), max(self.height(), height))
+        elif machinePath is not None and machinePath != self.showViewerWindow.machinePath:
+            self.showViewerWindow.setMachinePath(machinePath)
+        self.pages.setCurrentWidget(self.showViewerWindow)
+        self.managerTabs.setCurrentIndex(SHOW_MANAGER_TAB)
+        self._setPageMenus(self.showViewerWindow.pageMenus)
+        self._updateWindowTitle()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    # The following switches to the Project Manager.  Leaving the Show Manager pauses its playback and keeps its changes
+    def showProjectManager(self) -> None:
+        self.pages.setCurrentWidget(self.projectManagerPage)
+        self.managerTabs.setCurrentIndex(PROJECT_MANAGER_TAB)
+        self._setPageMenus(self.projectManagerMenus)
+        self._updateWindowTitle()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    # The following titles the window after the manager shown, e.g. the machine whose shows are shown
+    def _updateWindowTitle(self) -> None:
+        viewer = self.showViewerWindow
+        isShowManager = viewer is not None and self.pages.currentWidget() is viewer
+        if viewer is not None and isShowManager:
+            self.setWindowTitle(viewer.windowTitle())
+            return
+        project = self.selectedProject()
+        self.setWindowTitle(f"{WINDOW_TITLE} — {project.projectName}" if project else WINDOW_TITLE)
 
     # The following is used to close the application
     def closeEvent(self, closeEvent) -> None:  # noqa: N802 - Qt override
+
+        # The following checks that changes to shows not saved in the show viewer can be lost
+        if self.showViewerWindow is not None and not self.showViewerWindow.confirmDiscardChanges():
+            closeEvent.ignore()
+            return
 
         # The following closes all of the running processes upon a close event, monitors before games
         for projectProcesses in list(self.runningProcesses.values()):
