@@ -1,7 +1,7 @@
 [project]
 name = "mpf-manager"
-version = "0.1.2"
-description = "Utility for managing MPF and Python Virtual Environments"
+version = "0.2.0"
+description = "Project Management Tool for Mission Pinball Framework"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

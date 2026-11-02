@@ -97,6 +97,8 @@ class Settings:
     godotExecutablePath: str = ""
     runProfileAtStartup: bool = False
     startupRunProfile: str = ""
+    # How MPF-Manager looks: "purple", "purple dark" or "system"
+    theme: str = "purple"
 
 
 # The following class is used to process storage operations within MPF Manager
