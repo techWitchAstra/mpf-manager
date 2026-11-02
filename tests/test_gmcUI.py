@@ -69,14 +69,14 @@ def test_newProjectGMCOptionNeedsEligibleEnvironment(qtbot, tmp_path):
 def test_createGMCButtonOnlyForEligibleEnvironment(qtbot, tmp_path):
     window = MainWindow(_store(tmp_path, "0.57.0"))
     qtbot.addWidget(window)
-    window.projectListTable.selectRow(0)
+    window.openProject(window.storedData.projectList[0])
     assert not window.createGMCButton.isEnabled()
 
     environment = window.storedData.getVENVbyName("env")
     assert environment is not None
     environment.installedMPFVersion = "0.80.0"
     window.refreshMainWindow()
-    window.projectListTable.selectRow(0)
+    window.openProject(window.storedData.projectList[0])
     assert window.createGMCButton.isEnabled()
 
 
@@ -98,7 +98,7 @@ def test_createGMCProjectEndToEnd(qtbot, tmp_path, monkeypatch):
 
     window = MainWindow(_store(tmp_path))
     qtbot.addWidget(window)
-    window.projectListTable.selectRow(0)
+    window.openProject(window.storedData.projectList[0])
     window.createGMCProject()
 
     project = window.storedData.getProjectbyPath(str(tmp_path / "machine"))
